@@ -12,6 +12,7 @@ Visualización en vivo de tus agentes de IA de **OpenCode** como app de escritor
 ## Qué hace
 
 - Lee la base SQLite de OpenCode (`~/.local/share/opencode/opencode.db`) en tiempo real
+- **Fuente dual**: también lee las sesiones de Claude Code (`~/.claude/projects/*/*.jsonl`) — ambas pueden estar vivas a la vez, cada una con su main; las fuentes ausentes simplemente se omiten
 - Renderiza agentes animados en pixel art que reaccionan a lo que hace cada agente: leyendo, editando, ejecutando comandos, pensando, creando sub-agentes
 - Multi-agente: cada agente activo tiene su propio personaje con identidad estable (sin fantasmas)
 - **6 temas de oficina** (generados con IA): Retro Cubicles, Retro Office, Cozy Café, Corporate, Startup, Original Desk — cada uno con asientos, escala y suelo calibrados
@@ -48,12 +49,13 @@ El instalador queda en `dist/` (`Pixel Office Setup 1.0.0.exe`).
 | Variable     | Default                                              | Para qué sirve                          |
 | ------------ | ---------------------------------------------------- | --------------------------------------- |
 | `OPENCODE_DB`| `~/.local/share/opencode/opencode.db` (home)         | Ruta a la base SQLite de OpenCode       |
+| `CLAUDE_DIR` | `~/.claude/projects` (home)                          | Ruta a las sesiones de Claude Code      |
 
 Nada más que configurar — todo lo demás (tema, fondo, elenco, calibración) persiste en el `localStorage` del navegador/Electron.
 
 ## Cómo funciona
 
-OpenCode guarda sesiones y actividad en una SQLite local. Un endpoint Server-Sent Events (`api/pixel-agents/agents-stream`) la consulta y emite eventos `snapshot` / `agent_update` / `agent_end` con IDs estables. El frontend (`AgentDataContext`) mantiene el estado; `DeskCanvas` renderiza la oficina en primer plano (los sprites entran, se sientan, trabajan, se desvanecen) y `OfficeCanvas` la vista general del edificio. Sin plugins ni hooks.
+OpenCode guarda sesiones y actividad en una SQLite local; Claude Code escribe archivos JSONL. Un endpoint Server-Sent Events (`api/pixel-agents/agents-stream`) consulta ambas fuentes y emite eventos `snapshot` / `agent_update` / `agent_end` con IDs estables (`main` para OpenCode, `claude-main` para Claude — cada fuente conserva su silla principal). El frontend (`AgentDataContext`) mantiene el estado; `DeskCanvas` renderiza la oficina en primer plano (los sprites entran, se sientan, trabajan, se desvanecen) y `OfficeCanvas` la vista general del edificio. Sin plugins ni hooks.
 
 ## Estructura del proyecto
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -10,6 +11,10 @@ import path from "node:path";
 const DB_PATH =
   process.env.OPENCODE_DB ??
   path.join(os.homedir(), ".local", "share", "opencode", "opencode.db");
+// Claude Code session files (second source; missing dir = OpenCode only)
+const CLAUDE_DIR =
+  process.env.CLAUDE_DIR ??
+  path.join(os.homedir(), ".claude", "projects");
 const POLL_MS = 600;
 const IDLE_MS = 10_000;
 const MAX_AGENTS = 6;
@@ -43,6 +48,7 @@ interface SessionRow {
   agent: string;
   slug: string | null;
   time_updated: number;
+  src: "opencode" | "claude";
 }
 
 interface PartRow {
@@ -75,19 +81,22 @@ function getRecentSessions(limit: number): SessionRow[] {
   const d = getDb();
   if (!d) return [];
   try {
-    return d
+    const rows = d
       .prepare(
         `SELECT id, title, agent, slug, time_updated FROM session
          WHERE (time_archived IS NULL OR time_archived = 0)
          ORDER BY time_updated DESC LIMIT ?`
       )
-      .all(limit) as unknown as SessionRow[];
+      .all(limit) as unknown as Omit<SessionRow, "src">[];
+    return rows.map((r) => ({ ...r, src: "opencode" as const }));
   } catch {
     return [];
   }
 }
 
-function getLatestPart(sessionId: string): PartRow | null {
+function getLatestPart(t: TrackedSession): PartRow | null {
+  if (t.src === "claude") return getLatestClaudePart(t);
+  const sessionId = t.sessionId;
   const d = getDb();
   if (!d) return null;
   try {
@@ -104,6 +113,8 @@ function getLatestPart(sessionId: string): PartRow | null {
 }
 
 function getMessageRole(messageId: string): string | null {
+  // Claude-synthesized parts carry their role inline (no DB lookup)
+  if (messageId.startsWith("claude:")) return messageId.slice("claude:".length);
   const d = getDb();
   if (!d) return null;
   try {
@@ -113,6 +124,146 @@ function getMessageRole(messageId: string): string | null {
     if (!row) return null;
     const data = JSON.parse(row.data) as { role?: string };
     return data.role ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Claude Code source (JSONL session files) ───────────────────────────────
+// Reads ~/.claude/projects/*/*.jsonl tails and synthesizes PartRows in the
+// exact shape parsePart() expects, so both sources share all downstream logic
+// (states, details, idle settle, 15-min window).
+
+function getClaudeSessions(limit: number): SessionRow[] {
+  try {
+    const dirs = fs.readdirSync(CLAUDE_DIR, { withFileTypes: true }).filter((d) => d.isDirectory());
+    const files: { file: string; mtime: number }[] = [];
+    for (const d of dirs) {
+      const dp = path.join(CLAUDE_DIR, d.name);
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dp, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const e of entries) {
+        if (!e.isFile() || !e.name.endsWith(".jsonl")) continue;
+        const fp = path.join(dp, e.name);
+        try {
+          files.push({ file: fp, mtime: fs.statSync(fp).mtimeMs });
+        } catch {}
+      }
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    return files.slice(0, limit).map((f) => ({
+      id: `claude:${path.basename(f.file, ".jsonl")}`,
+      title: "claude",
+      agent: "claude",
+      slug: null,
+      time_updated: f.mtime,
+      src: "claude" as const,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function readTailLines(file: string, maxBytes = 65536, maxLines = 60): string[] {
+  try {
+    const st = fs.statSync(file);
+    const start = Math.max(0, st.size - maxBytes);
+    const fd = fs.openSync(file, "r");
+    const buf = Buffer.alloc(st.size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    fs.closeSync(fd);
+    return buf.toString("utf8").split("\n").slice(-maxLines);
+  } catch {
+    return [];
+  }
+}
+
+function claudeLineToPart(
+  line: string,
+  sessionId: string,
+  partId: string
+): PartRow | null {
+  let d: {
+    type?: string;
+    timestamp?: string;
+    message?: { role?: string; content?: unknown };
+  };
+  try {
+    d = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const ts = typeof d.timestamp === "string" ? Date.parse(d.timestamp) : NaN;
+  const time_created = isNaN(ts) ? Date.now() : ts;
+  const role = d.message?.role;
+  const content = d.message?.content;
+  const base = { id: partId, session_id: sessionId, time_created };
+  if ((d.type === "assistant" || role === "assistant") && Array.isArray(content)) {
+    const blocks = content as { type?: string; name?: string; input?: unknown; text?: string }[];
+    const tool = [...blocks].reverse().find((b) => b.type === "tool_use" && typeof b.name === "string");
+    if (tool) {
+      return {
+        ...base,
+        message_id: "claude:assistant",
+        data: JSON.stringify({ type: "tool", tool: tool.name, state: { status: "running", input: tool.input ?? {} } }),
+      };
+    }
+    const text = blocks.find((b) => b.type === "text" && typeof b.text === "string" && b.text.trim());
+    if (text) {
+      return {
+        ...base,
+        message_id: "claude:assistant",
+        data: JSON.stringify({ type: "text", text: (text.text as string).slice(0, 200) }),
+      };
+    }
+    return null;
+  }
+  if (d.type === "user" || role === "user") {
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? (content.find((b) => typeof b === "object" && b !== null && (b as { type?: string }).type === "text") as { text?: unknown } | undefined)?.text
+          : undefined;
+    if (typeof text === "string" && text.trim()) {
+      return {
+        ...base,
+        message_id: "claude:user",
+        data: JSON.stringify({ type: "text", text: text.slice(0, 200) }),
+      };
+    }
+  }
+  return null;
+}
+
+function getLatestClaudePart(t: TrackedSession): PartRow | null {
+  // t.sessionId is namespaced ("claude:<fileBase>"); resolve the newest
+  // same-named file across project dirs.
+  try {
+    const base = t.sessionId.slice("claude:".length);
+    const dirs = fs.readdirSync(CLAUDE_DIR, { withFileTypes: true }).filter((d) => d.isDirectory());
+    let best: { file: string; mtime: number } | null = null;
+    for (const d of dirs) {
+      const fp = path.join(CLAUDE_DIR, d.name, `${base}.jsonl`);
+      try {
+        const mtime = fs.statSync(fp).mtimeMs;
+        if (!best || mtime > best.mtime) best = { file: fp, mtime };
+      } catch {}
+    }
+    if (!best) return null;
+    const size = fs.statSync(best.file).size;
+    const lines = readTailLines(best.file);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      const part = claudeLineToPart(line, t.sessionId, `cl:${size}:${i}`);
+      if (part) return part;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -131,18 +282,19 @@ function toolToState(tool: string): MultiAgentState {
 
 function toolDetail(tool: string, state: Record<string, unknown>): string {
   try {
+    const t = tool.toLowerCase(); // Claude sends "Read", OpenCode sends "read"
     const input = (state.input ?? {}) as Record<string, unknown>;
     const str = (v: unknown) => (typeof v === "string" ? v : "");
-    if (tool === "read" || tool === "edit" || tool === "write") {
+    if (t === "read" || t === "edit" || t === "write") {
       const p = str(input.filePath ?? input.path ?? input.file ?? "");
       return p.split(/[/\\]/).pop()?.slice(0, 40) ?? tool;
     }
-    if (tool === "bash") return str(input.command ?? input.cmd).slice(0, 80);
-    if (tool === "grep" || tool === "glob")
+    if (t === "bash") return str(input.command ?? input.cmd).slice(0, 80);
+    if (t === "grep" || t === "glob")
       return str(input.pattern ?? input.query).slice(0, 60);
-    if (tool === "webfetch" || tool === "websearch")
+    if (t === "webfetch" || t === "websearch")
       return str(input.url ?? input.query).slice(0, 60);
-    if (tool === "task" || tool === "subagent")
+    if (t === "task" || t === "subagent")
       return str(input.description ?? input.prompt).slice(0, 60);
     return JSON.stringify(input).slice(0, 60);
   } catch {
@@ -194,6 +346,7 @@ interface TrackedSession {
   lastSeen: number;
   idleSent: boolean;
   misses: number; // consecutive polls absent (grace before agent_end)
+  src: "opencode" | "claude";
 }
 
 function shortTitle(title: string): string {
@@ -234,7 +387,10 @@ export async function GET() {
       }
 
       function refreshSessions(): SessionRow[] {
-        const sessions = getRecentSessions(MAX_AGENTS);
+        // Dual source: OpenCode SQLite + Claude Code JSONL, merged by recency.
+        const sessions = [...getRecentSessions(MAX_AGENTS), ...getClaudeSessions(MAX_AGENTS)]
+          .sort((a, b) => b.time_updated - a.time_updated)
+          .slice(0, MAX_AGENTS);
         const now = Date.now();
         // Lock "main" to the newest session only when unset (stable IDs).
         if (mainSessionId === null && sessions.length > 0) {
@@ -242,10 +398,15 @@ export async function GET() {
         }
         sessions.forEach((s) => {
           const isMain = s.id === mainSessionId;
+          const namespaced = s.src === "claude";
           if (!tracked.has(s.id)) {
             tracked.set(s.id, {
               sessionId: s.id,
-              agentId: isMain ? "main" : `sub-${s.id.slice(-6)}`,
+              agentId: isMain
+                ? (namespaced ? "claude-main" : "main")
+                : namespaced
+                  ? `csub-${s.id.slice(-6)}`
+                  : `sub-${s.id.slice(-6)}`,
               role: isMain ? "main" : "sub",
               agentType: s.agent || undefined,
               title: s.title || "agent",
@@ -253,6 +414,7 @@ export async function GET() {
               lastSeen: now,
               idleSent: false,
               misses: 0,
+              src: s.src,
             });
           } else {
             const t = tracked.get(s.id)!;
@@ -271,7 +433,7 @@ export async function GET() {
           // Only show sessions active in the last 15 min
           if (now - s.time_updated > 15 * 60_000) continue;
           const t = tracked.get(s.id)!;
-          const part = getLatestPart(s.id);
+          const part = getLatestPart(t);
           let state: MultiAgentState = "idle";
           let tool: string | undefined;
           let detail: string | undefined;
@@ -329,7 +491,7 @@ export async function GET() {
             tracked.get(s.id)!.misses = 0;
             if (now - s.time_updated > 15 * 60_000) continue;
             const t = tracked.get(s.id)!;
-            const part = getLatestPart(s.id);
+            const part = getLatestPart(t);
             if (part && part.id !== t.lastPartId) {
               t.lastPartId = part.id;
               t.lastSeen = now;

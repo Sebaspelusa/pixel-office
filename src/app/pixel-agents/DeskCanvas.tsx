@@ -137,7 +137,15 @@ function spriteCSS(anim: Anim, frameIdx: number, charN: number, sc: number): Rea
 }
 
 function assignSeat(role: AgentRole, occupied: Set<number>, seatCount: number, hasMain = false): number {
-  if (role === "main") return 0;
+  if (role === "main") {
+    if (!occupied.has(0)) return 0;
+    // Dual source (OpenCode + Claude): a second main takes the first free
+    // seat instead of overlapping the boss chair.
+    for (let i = 1; i < seatCount; i++) {
+      if (!occupied.has(i)) return i;
+    }
+    return -1;
+  }
   // Boss chair never sits empty: first sub takes seat 0 when no main is around
   if (!hasMain && !occupied.has(0)) return 0;
   for (let i = 1; i < seatCount; i++) {
@@ -396,14 +404,16 @@ export function DeskCanvas() {
       if (!motionRef.current.has(agentId)) {
         const hasMain = Array.from(agents.values()).some((e) => e.role === "main");
         if (entry.role === "main" && occupiedSeatsRef.current.has(0)) {
-          // Boss is back: relocate whoever holds seat 0 to a free seat
+          // Boss is back: relocate whoever holds seat 0 to a free seat —
+          // unless the holder is the other source's main (they coexist).
           const holder = Array.from(motionRef.current.entries()).find(([, m]) => m.seatIndex === 0 && !m.walkingOut);
+          const holderIsMain = holder ? localAgentsRef.current.get(holder[0])?.role === "main" : false;
           const fwH = Math.round(16 * BASE_SC * es * (cw / REF_WIDTH));
           let free = -1;
           for (let i = 1; i < seats.length; i++) {
             if (!occupiedSeatsRef.current.has(i)) { free = i; break; }
           }
-          if (holder && free !== -1) {
+          if (holder && !holderIsMain && free !== -1) {
             const hm = holder[1];
             occupiedSeatsRef.current.delete(0);
             occupiedSeatsRef.current.add(free);
