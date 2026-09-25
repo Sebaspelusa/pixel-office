@@ -1,4 +1,4 @@
-# Pixel HQ
+# Pixel Office
 
 Visualización en vivo de tus agentes de IA de **OpenCode** como app de escritorio. Mira cómo tus agentes caminan a sus escritorios, leen, editan, ejecutan comandos y piensan — en tiempo real, estilo retro.
 
@@ -7,7 +7,7 @@ Visualización en vivo de tus agentes de IA de **OpenCode** como app de escritor
 
 ---
 
-![Vista previa de Pixel HQ](public/pixel-agents-office-v2.webp)
+![Vista previa de Pixel Office](public/pixel-agents-office-v2.webp)
 
 ## Qué hace
 
@@ -41,7 +41,7 @@ Para compilar la app de escritorio:
 npm run build:exe
 ```
 
-El instalador queda en `dist/` (`Pixel HQ Setup 1.0.0.exe`).
+El instalador queda en `dist/` (`Pixel Office Setup 1.0.0.exe`).
 
 ## Configuración
 

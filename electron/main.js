@@ -73,13 +73,13 @@ function waitForServer(timeoutMs = 60000) {
 
 const LOADING_HTML = "data:text/html," + encodeURIComponent(
   '<html><body style="background:#0a0a0f;color:#fbbf24;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:monospace">' +
-  '<div style="text-align:center"><div style="font-size:48px">🏢</div><h1>Pixel HQ</h1><p style="color:rgba(255,255,255,0.5)">Starting server...</p></div>' +
+  '<div style="text-align:center"><div style="font-size:48px">🏢</div><h1>Pixel Office</h1><p style="color:rgba(255,255,255,0.5)">Starting server...</p></div>' +
   "</body></html>"
 );
 
 const ERROR_HTML = "data:text/html," + encodeURIComponent(
   '<html><body style="background:#1a1a2e;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:monospace">' +
-  '<div style="text-align:center"><h1>Pixel HQ</h1><p>Server failed to start. Check if port 3000 is free.</p></div>' +
+  '<div style="text-align:center"><h1>Pixel Office</h1><p>Server failed to start. Check if port 3000 is free.</p></div>' +
   "</body></html>"
 );
 
@@ -89,7 +89,7 @@ function createWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: "Pixel HQ - Starting...",
+      title: "Pixel Office - Starting...",
     show: false,
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   });
@@ -119,7 +119,7 @@ function createTray() {
   let icon;
   try { icon = nativeImage.createFromPath(iconPath); } catch { icon = nativeImage.createEmpty(); }
   tray = new Tray(icon);
-  tray.setToolTip("Pixel HQ");
+  tray.setToolTip("Pixel Office");
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Open", click: () => { mainWindow?.show(); mainWindow?.focus(); } },
     { type: "separator" },
@@ -148,7 +148,7 @@ if (!gotLock) {
 
     const ready = await waitForServer();
     if (mainWindow) {
-      mainWindow.setTitle("Pixel HQ - Agent Visualizer");
+      mainWindow.setTitle("Pixel Office - Agent Visualizer");
       mainWindow.loadURL(ready ? URL : ERROR_HTML);
       if (!mainWindow.isVisible()) mainWindow.show();
     }

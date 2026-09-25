@@ -1,4 +1,4 @@
-# Pixel HQ
+# Pixel Office
 
 A live pixel-art visualization of your **OpenCode** AI agents, as a desktop app. Watch your agents walk to their desks, read, edit, run commands and think — in real time, retro-game style.
 
@@ -7,7 +7,7 @@ A live pixel-art visualization of your **OpenCode** AI agents, as a desktop app.
 
 ---
 
-![Pixel HQ preview](public/pixel-agents-office-v2.webp)
+![Pixel Office preview](public/pixel-agents-office-v2.webp)
 
 ## What it does
 
@@ -41,7 +41,7 @@ To build the desktop app:
 npm run build:exe
 ```
 
-The installer lands in `dist/` (`Pixel HQ Setup 1.0.0.exe`).
+The installer lands in `dist/` (`Pixel Office Setup 1.0.0.exe`).
 
 ## Configuration
 

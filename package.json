@@ -1,5 +1,5 @@
 {
-  "name": "pixel-hq",
+  "name": "pixel-office",
   "version": "1.0.0",
   "private": true,
   "main": "electron/main.js",
@@ -29,8 +29,8 @@
     "typescript": "^5"
   },
   "build": {
-    "appId": "com.pixelhq.agent-visualizer",
-    "productName": "Pixel HQ",
+    "appId": "com.pixeloffice.agent-visualizer",
+    "productName": "Pixel Office",
     "directories": {
       "output": "dist"
     },
@@ -72,7 +72,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Pixel HQ"
+      "shortcutName": "Pixel Office"
     }
   }
 }

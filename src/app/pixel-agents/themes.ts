@@ -1,4 +1,4 @@
-// Theme definitions for Pixel HQ
+// Theme definitions for Pixel Office
 // Each theme defines colors for: background, text, accent, panels, glows
 
 export interface Theme {

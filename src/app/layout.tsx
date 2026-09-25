@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Pixel Agents",
+  title: "Pixel Office",
   description: "Live visualization of Claude Code agents working in real time",
 };
 
