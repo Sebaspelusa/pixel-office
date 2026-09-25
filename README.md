@@ -1,84 +1,94 @@
-# Pixel Agents
+# Pixel HQ
 
-A live pixel art visualization of Claude Code agents working in real time. Built for developers who want to show their AI workflow in an engaging, retro-game style.
+A live pixel-art visualization of your **OpenCode** AI agents, as a desktop app. Watch your agents walk to their desks, read, edit, run commands and think — in real time, retro-game style.
 
-> Designed by **Vasyl Pavlyuchok** · [vasylpavlyuchok.com](https://vasylpavlyuchok.com)
+> Originally based on [Pixel Agents](https://github.com/pablodelucca/pixel-agents) by **Vasyl Pavlyuchok** · [vasylpavlyuchok.com](https://vasylpavlyuchok.com)
 > Sprites by [pablodelucca](https://github.com/pablodelucca/pixel-agents) (MIT)
 
 ---
 
-![Pixel Agents preview](public/pixel-agents-office-v2.webp)
+![Pixel HQ preview](public/pixel-agents-office-v2.webp)
 
 ## What it does
 
-- Reads Claude Code's session `.jsonl` files in real time
-- Renders animated pixel art agents that react to what Claude is doing: reading, editing, running commands, thinking, spawning sub-agents
-- Multi-agent support: each active agent gets its own character that walks to a desk and animates
-- Broadcast toggle: control when the visualization is visible publicly
+- Polls the OpenCode SQLite database (`~/.local/share/opencode/opencode.db`) in real time
+- Renders animated pixel-art agents that react to what each agent is doing: reading, editing, running commands, thinking, spawning sub-agents
+- Multi-agent support: every active agent gets its own character with a stable identity (no ghosts)
+- **6 office themes** (AI-generated): Retro Cubicles, Retro Office, Cozy Café, Corporate, Startup, Original Desk — each with its own seats, scale and floor calibration
+- **Cast panel** (👥): toggle ambient characters per spot, pick their look (P0–P9), wander mode, workers-only mode
+- **CAL mode** (📐): drag seats and characters onto furniture, tune zoom/size live, restore defaults
+- Day/night clock overlay, event log, token usage counter, public broadcast toggle
+- Optional multi-floor **building view** (🏢) with terrace, studio, servers, meeting room, lobby and café
 
 ## Requirements
 
-- Docker + Docker Compose
-- Claude Code running on the same machine or server
+- Node.js 20+ and npm
+- OpenCode running on the same machine (it writes the SQLite DB this app reads)
+- Windows for the `.exe` build (dev mode works anywhere)
 
 ## Quick start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/pixel-agents.git
-cd pixel-agents
+npm install
+npm run dev
 ```
 
-Edit `docker-compose.yml` and set `CLAUDE_JSONL_DIR` to match where Claude Code writes its session files:
+Open `http://localhost:3000/pixel-agents` — you'll see your agents live.
 
-```yaml
-environment:
-  - CLAUDE_JSONL_DIR=/dot-claude/projects/-root
-```
-
-Then:
+To build the desktop app:
 
 ```bash
-docker compose up -d --build
+npm run build:exe
 ```
 
-Open `http://localhost:3000` — you'll see your agents live.
+The installer lands in `dist/` (`Pixel HQ Setup 1.0.0.exe`).
 
 ## Configuration
 
-See [CLAUDE.md](CLAUDE.md) for full setup instructions. You can also pass `CLAUDE.md` directly to Claude Code and ask it to configure everything automatically.
+| Env var      | Default                                              | What it does                          |
+| ------------ | ---------------------------------------------------- | ------------------------------------- |
+| `OPENCODE_DB`| `~/.local/share/opencode/opencode.db` (home dir)     | Path to the OpenCode SQLite database  |
 
-```
-Tell Claude Code: "Read CLAUDE.md and help me set up Pixel Agents"
-```
+No other setup needed — everything else (theme, background, cast, calibration) persists in the browser/Electron `localStorage`.
 
 ## How it works
 
-Claude Code writes conversation logs to `~/.claude/projects/<path>/`. This app mounts that directory read-only and tails the `.jsonl` files via a Server-Sent Events endpoint — no plugins, no hooks required.
+OpenCode stores sessions and tool activity in a local SQLite database. A Server-Sent Events endpoint (`api/pixel-agents/agents-stream`) polls that DB and emits `snapshot` / `agent_update` / `agent_end` events with stable agent IDs. The frontend (`AgentDataContext`) keeps agent state; `DeskCanvas` renders the close-up office (sprites walk in, sit, work, fade out) and `OfficeCanvas` renders the building overview. No plugins or hooks required.
 
 ## Project structure
 
 ```
 src/app/
 ├── api/pixel-agents/
-│   ├── agents-stream/route.ts   ← SSE endpoint (reads Claude Code logs)
+│   ├── agents-stream/route.ts   ← SSE endpoint (polls OpenCode SQLite)
 │   └── broadcast/route.ts       ← public visibility toggle
 └── pixel-agents/
     ├── AgentDataContext.tsx      ← SSE client + state management
-    ├── DeskCanvas.tsx            ← desk view (6 seats)
-    ├── OfficeCanvas.tsx          ← multi-floor office building
+    ├── BackgroundContext.tsx     ← office theme selection + persistence
+    ├── ThemeContext.tsx          ← color themes
+    ├── CastContext.tsx           ← ambient cast selection (👥)
+    ├── CastSelector.tsx          ← cast panel UI
+    ├── BackgroundSelector.tsx    ← theme picker UI
+    ├── ThemeSelector.tsx         ← theme picker UI
+    ├── DeskCanvas.tsx            ← close-up office (seats, sprites, CAL mode)
+    ├── OfficeCanvas.tsx          ← multi-floor building (zones, wander)
+    ├── DayNightOverlay.tsx       ← clock + day/night tint
+    ├── EventLog.tsx              ← agent activity feed
+    ├── TokenCounter.tsx          ← token usage
+    ├── office-backgrounds.ts     ← per-theme seats / zoom / scale / ambient
     ├── layout.tsx
     └── page.tsx
+electron/
+└── main.js                       ← Electron shell (single instance, loader)
 ```
 
 ## Credits
 
-- Pixel art sprites: [pablodelucca/pixel-agents](https://github.com/pablodelucca/pixel-agents) (MIT)
-- Built with Next.js 16, Tailwind CSS, TypeScript
+- Original concept + pixel art sprites: [pablodelucca/pixel-agents](https://github.com/pablodelucca/pixel-agents) (MIT)
+- Office backgrounds: AI-generated for this fork
+- Built with Next.js 16, Electron, Tailwind CSS, TypeScript
 
 ## License
 
-MIT © Vasyl Pavlyuchok — see [LICENSE](LICENSE)
-
----
-
-[README en Español](README.es.md)
+MIT © Vasyl Pavlyuchok — see [LICENSE](LICENSE) (original notices preserved).
+Modifications in this fork are also released under MIT.

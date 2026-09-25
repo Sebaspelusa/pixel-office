@@ -1,84 +1,94 @@
-# Pixel Agents
+# Pixel HQ
 
-Visualización en tiempo real de agentes Claude Code con pixel art estilo retro. Diseñado para desarrolladores que quieren mostrar su flujo de trabajo con IA de forma visual y llamativa.
+Visualización en vivo de tus agentes de IA de **OpenCode** como app de escritorio. Mira cómo tus agentes caminan a sus escritorios, leen, editan, ejecutan comandos y piensan — en tiempo real, estilo retro.
 
-> Diseñado por **Vasyl Pavlyuchok** · [vasylpavlyuchok.com](https://vasylpavlyuchok.com)
-> Sprites por [pablodelucca](https://github.com/pablodelucca/pixel-agents) (MIT)
+> Basado originalmente en [Pixel Agents](https://github.com/pablodelucca/pixel-agents) de **Vasyl Pavlyuchok** · [vasylpavlyuchok.com](https://vasylpavlyuchok.com)
+> Sprites de [pablodelucca](https://github.com/pablodelucca/pixel-agents) (MIT)
 
 ---
 
-![Vista previa de Pixel Agents](public/pixel-agents-office-v2.webp)
+![Vista previa de Pixel HQ](public/pixel-agents-office-v2.webp)
 
 ## Qué hace
 
-- Lee los archivos `.jsonl` de sesión de Claude Code en tiempo real
-- Renderiza agentes animados en pixel art que reaccionan a lo que hace Claude: leyendo, editando, ejecutando comandos, pensando, creando sub-agentes
-- Soporte multi-agente: cada agente activo tiene su propio personaje que camina hasta un escritorio y se anima
-- Toggle de broadcast: controla cuándo la visualización es visible públicamente
+- Lee la base SQLite de OpenCode (`~/.local/share/opencode/opencode.db`) en tiempo real
+- Renderiza agentes animados en pixel art que reaccionan a lo que hace cada agente: leyendo, editando, ejecutando comandos, pensando, creando sub-agentes
+- Multi-agente: cada agente activo tiene su propio personaje con identidad estable (sin fantasmas)
+- **6 temas de oficina** (generados con IA): Retro Cubicles, Retro Office, Cozy Café, Corporate, Startup, Original Desk — cada uno con asientos, escala y suelo calibrados
+- **Panel de elenco** (👥): prende/apaga personajes ambiente por puesto, cambia su dibujo (P0–P9), modo deambular, modo solo-trabajadores
+- **Modo CAL** (📐): arrastra asientos y personajes a los muebles, ajusta zoom/tamaño en vivo, restaura valores
+- Reloj día/noche, registro de eventos, contador de tokens, toggle de broadcast público
+- Vista opcional del **edificio** multi-planta (🏢): terraza, estudio, servidores, reuniones, lobby y café
 
 ## Requisitos
 
-- Docker + Docker Compose
-- Claude Code corriendo en la misma máquina o servidor
+- Node.js 20+ y npm
+- OpenCode corriendo en la misma máquina (escribe la SQLite que lee esta app)
+- Windows para compilar el `.exe` (el modo dev funciona en cualquier SO)
 
 ## Inicio rápido
 
 ```bash
-git clone https://github.com/TU_USUARIO/pixel-agents.git
-cd pixel-agents
+npm install
+npm run dev
 ```
 
-Edita `docker-compose.yml` y configura `CLAUDE_JSONL_DIR` para que apunte a donde Claude Code escribe sus archivos de sesión:
+Abre `http://localhost:3000/pixel-agents` — verás tus agentes en vivo.
 
-```yaml
-environment:
-  - CLAUDE_JSONL_DIR=/dot-claude/projects/-root
-```
-
-Luego:
+Para compilar la app de escritorio:
 
 ```bash
-docker compose up -d --build
+npm run build:exe
 ```
 
-Abre `http://localhost:3000` — verás tus agentes en vivo.
+El instalador queda en `dist/` (`Pixel HQ Setup 1.0.0.exe`).
 
 ## Configuración
 
-Consulta [CLAUDE.md](CLAUDE.md) para instrucciones completas. También puedes pasar el archivo `CLAUDE.md` directamente a Claude Code para que configure todo automáticamente:
+| Variable     | Default                                              | Para qué sirve                          |
+| ------------ | ---------------------------------------------------- | --------------------------------------- |
+| `OPENCODE_DB`| `~/.local/share/opencode/opencode.db` (home)         | Ruta a la base SQLite de OpenCode       |
 
-```
-Dile a Claude Code: "Lee CLAUDE.md y ayúdame a configurar Pixel Agents"
-```
+Nada más que configurar — todo lo demás (tema, fondo, elenco, calibración) persiste en el `localStorage` del navegador/Electron.
 
 ## Cómo funciona
 
-Claude Code escribe los logs de conversación en `~/.claude/projects/<ruta>/`. Esta app monta ese directorio de solo lectura y lee los archivos `.jsonl` mediante un endpoint de Server-Sent Events — sin plugins ni hooks adicionales.
+OpenCode guarda sesiones y actividad en una SQLite local. Un endpoint Server-Sent Events (`api/pixel-agents/agents-stream`) la consulta y emite eventos `snapshot` / `agent_update` / `agent_end` con IDs estables. El frontend (`AgentDataContext`) mantiene el estado; `DeskCanvas` renderiza la oficina en primer plano (los sprites entran, se sientan, trabajan, se desvanecen) y `OfficeCanvas` la vista general del edificio. Sin plugins ni hooks.
 
 ## Estructura del proyecto
 
 ```
 src/app/
 ├── api/pixel-agents/
-│   ├── agents-stream/route.ts   ← endpoint SSE (lee los logs de Claude Code)
+│   ├── agents-stream/route.ts   ← endpoint SSE (lee la SQLite de OpenCode)
 │   └── broadcast/route.ts       ← toggle de visibilidad pública
 └── pixel-agents/
     ├── AgentDataContext.tsx      ← cliente SSE + gestión de estado
-    ├── DeskCanvas.tsx            ← vista de escritorio (6 puestos)
-    ├── OfficeCanvas.tsx          ← edificio de oficina multi-planta
+    ├── BackgroundContext.tsx     ← selección de tema de oficina + persistencia
+    ├── ThemeContext.tsx          ← temas de color
+    ├── CastContext.tsx           ← selección de elenco ambiente (👥)
+    ├── CastSelector.tsx          ← UI del panel de elenco
+    ├── BackgroundSelector.tsx    ← UI de temas
+    ├── ThemeSelector.tsx         ← UI de colores
+    ├── DeskCanvas.tsx            ← oficina en primer plano (asientos, sprites, modo CAL)
+    ├── OfficeCanvas.tsx          ← edificio multi-planta (zonas, deambular)
+    ├── DayNightOverlay.tsx       ← reloj + tinte día/noche
+    ├── EventLog.tsx              ← feed de actividad
+    ├── TokenCounter.tsx          ← uso de tokens
+    ├── office-backgrounds.ts     ← asientos / zoom / escala / ambiente por tema
     ├── layout.tsx
     └── page.tsx
+electron/
+└── main.js                       ← shell Electron (instancia única, loader)
 ```
 
 ## Créditos
 
-- Sprites pixel art: [pablodelucca/pixel-agents](https://github.com/pablodelucca/pixel-agents) (MIT)
-- Construido con Next.js 16, Tailwind CSS, TypeScript
+- Concepto original + sprites pixel art: [pablodelucca/pixel-agents](https://github.com/pablodelucca/pixel-agents) (MIT)
+- Fondos de oficina: generados con IA para este fork
+- Construido con Next.js 16, Electron, Tailwind CSS, TypeScript
 
 ## Licencia
 
-MIT © Vasyl Pavlyuchok — ver [LICENSE](LICENSE)
-
----
-
-[README in English](README.md)
+MIT © Vasyl Pavlyuchok — ver [LICENSE](LICENSE) (avisos originales preservados).
+Las modificaciones de este fork también se publican bajo MIT.

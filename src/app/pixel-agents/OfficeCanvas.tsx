@@ -2,10 +2,11 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useAgentData } from "./AgentDataContext";
+import { useCast } from "./CastContext";
 import type { MultiAgentState } from "./AgentDataContext";
 
 // ─── Static config ─────────────────────────────────────────────────────────────
-const STATE_TO_ZONE: Record<MultiAgentState, string> = {
+export const STATE_TO_ZONE: Record<MultiAgentState, string> = {
   editing:   "studio",
   reading:   "studio",
   searching: "studio",
@@ -18,8 +19,11 @@ const STATE_TO_ZONE: Record<MultiAgentState, string> = {
 
 const POOL = { left: 0.397, top: 0.200, w: 0.247, h: 0.054 };
 
-// Sprite size is proportional to canvas width — same as DeskCanvas
-const SPRITE_W_FRAC = 16 / 1376 * 3.24 * 0.8; // ~3.24 scale at original 1376px width
+// Sprite size is proportional to canvas width — same as DeskCanvas.
+// 1.2 multiplier (~1.5x vs before): terrace/studio figures read human-sized
+// next to doors/railings; verified headroom in every zone (terrace/studio/
+// servers/meeting/sofa/cafe) so enlarged sprites stay inside their rooms.
+const SPRITE_W_FRAC = 16 / 1376 * 3.24 * 1.2; // ~3.9 scale at original 1376px width
 const BG_RATIO = 768 / 1376;
 
 interface Anim { row: number; frames: number[]; fps: number }
@@ -60,20 +64,30 @@ function seatAnim(zone: string): { row: number; frames: number[] } {
   return { row: 0, frames: [5, 6] };
 }
 
+// Stable per-agent look (0-5) derived from the id — same agent, same face
+function hashId(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = ((h * 31 + id.charCodeAt(i)) >>> 0);
+  return h;
+}
+
 const WALK_ANIM = { row: 0, frames: [0, 1, 2, 1] };
 
 // ─── Ambient agents — always visible, purely decorative, zero tokens ──────────
-const AMBIENT_AGENTS: [string, { state: MultiAgentState; role: string }][] = [
+// Office zones (studio/meeting/servers) show LIVE workers only — no ambient.
+// Social zones (terrace/sofa/cafe) keep their ambient life; cafe has a
+// chatting pair seated at the bar.
+export const AMBIENT_AGENTS: [string, { state: MultiAgentState; role: string }][] = [
   ["amb_1",    { state: "waiting",   role: "ambient" }],  // terraza slot 0
   ["amb_2",    { state: "waiting",   role: "ambient" }],  // terraza slot 1
   ["amb_3",    { state: "waiting",   role: "ambient" }],  // terraza slot 2
   ["amb_4",    { state: "waiting",   role: "ambient" }],  // terraza slot 3
   ["amb_5",    { state: "waiting",   role: "ambient" }],  // terraza slot 4 (derecha)
   ["amb_6",    { state: "waiting",   role: "ambient" }],  // terraza slot 5 (derecha)
-  ["amb_7",    { state: "thinking",  role: "ambient" }],  // meeting
-  ["amb_8",    { state: "running",   role: "ambient" }],  // servers
   ["amb_9",    { state: "idle",      role: "ambient" }],  // sofa lobby
-  ["amb_10",   { state: "spawning",  role: "ambient" }],  // cafe
+  ["amb_10",   { state: "spawning",  role: "ambient" }],  // cafe bar
+  ["amb_11",   { state: "spawning",  role: "ambient" }],  // cafe bar (charla)
+  ["amb_12",   { state: "spawning",  role: "ambient" }],  // cafe bar (charla)
 ];
 
 // ─── DEMO_MODE ─────────────────────────────────────────────────────────────────
@@ -150,14 +164,18 @@ const LOBBY_ZONES_INIT: LobbyZone[] = [
 ];
 
 // ─── OfficeCanvas ──────────────────────────────────────────────────────────────
+// NOTE: this view always uses the original office map — its zone slots,
+// elevator and labels are calibrated for it. Custom AI backgrounds apply
+// to the DeskCanvas (close-up) view only, so scenes never look doubled.
 export function OfficeCanvas() {
   const { agents } = useAgentData();
+  const { officeHidden, officeChar, wander: wanderOn, workersOnly } = useCast();
   const containerRef = useRef<HTMLDivElement>(null);
   const innerRef     = useRef<HTMLDivElement>(null);
   const [cw, setCw]  = useState(0);
   const [tick, setTick] = useState(0);
   const animRef  = useRef<Map<string, AgentAnim>>(new Map());
-  const stateRef = useRef({ cw: 0, elevX: 0.195, floors: FLOORS_INIT, slots: SLOTS_INIT, lobbyZones: LOBBY_ZONES_INIT });
+  const stateRef = useRef({ cw: 0, elevX: 0.195, floors: FLOORS_INIT, slots: SLOTS_INIT, lobbyZones: LOBBY_ZONES_INIT, officeHidden: [] as string[], officeChar: {} as Record<string, number>, wander: false, workersOnly: false });
 
   // Calibration state
   const [floors,     setFloors]     = useState(FLOORS_INIT);
@@ -177,24 +195,29 @@ export function OfficeCanvas() {
   }, []);
 
   // Sync stateRef on every render so the interval can read fresh values
-  stateRef.current = { cw, elevX, floors, slots, lobbyZones };
+  stateRef.current = { cw, elevX, floors, slots, lobbyZones, officeHidden, officeChar, wander: wanderOn, workersOnly };
 
   useEffect(() => {
     const id = setInterval(() => {
-      const { cw: W, elevX: EX, floors: FL, slots: SL, lobbyZones: LZ } = stateRef.current;
+      const { cw: W, elevX: EX, floors: FL, slots: SL, lobbyZones: LZ, officeHidden: OH, officeChar: OC, wander: WD, workersOnly: WO } = stateRef.current;
       if (W === 0) return;
       const H = W * BG_RATIO;
       const FW = Math.round(W * SPRITE_W_FRAC);
       const FH = FW * 2;
       const walkPx = W * 0.006;
-      const list = DEMO_MODE ? DEMO_AGENTS : [...Array.from(agents.entries()), ...AMBIENT_AGENTS];
+      const list = DEMO_MODE ? DEMO_AGENTS : [...Array.from(agents.entries()), ...AMBIENT_AGENTS.filter(([aid]) => !WO && !OH.includes(aid))];
       const allS = { ...SL, ...deriveZoneSlots(LZ) };
       const zc = new Map<string, number>();
-      let ambCount = 0;
 
       list.forEach(([id, entry], gi) => {
         const isAmbient = id.startsWith("amb_");
-        const charN = isAmbient ? 1 + (ambCount++ % 5) : 0;
+        // Sheet per ambient: cast-panel pick wins, else fixed roster slot (1-5).
+        // Live workers vary by id (0-5). No executives anywhere.
+        const ambIdx = isAmbient ? AMBIENT_AGENTS.findIndex(([aid]) => aid === id) : -1;
+        const ov = isAmbient ? OC[id] : undefined;
+        const charN = isAmbient
+          ? (ov !== undefined && ov >= 0 && ov <= 9 ? ov : 1 + ((ambIdx < 0 ? 0 : ambIdx) % 5))
+          : (hashId(id) % 6);
         const desiredZone = id === "amb_pool" ? "pool" : (STATE_TO_ZONE[entry.state] ?? "sofa");
         const si = zc.get(desiredZone) ?? 0; zc.set(desiredZone, si + 1);
         const zSlots = allS[desiredZone] ?? allS.sofa;
@@ -210,7 +233,7 @@ export function OfficeCanvas() {
           : physSeat ? slot.y - FHf : floorY - FHf;
         const destXFrac = slot.x - FWf / 2;
         const inPool = desiredZone === "pool" && slot.x >= POOL.left && slot.x <= POOL.left + POOL.w;
-        const walkFrac = 0.006; // walkPx / W
+        const walkFrac = 0.0035; // calm stroll (was 0.006 scurry)
 
         let a = animRef.current.get(id);
         if (!a) {
@@ -252,8 +275,9 @@ export function OfficeCanvas() {
           const sa = seatAnim(a.zone);
           a.frameIdx = (a.frameIdx + 1) % sa.frames.length;
           a.idleTicks = (a.idleTicks ?? 0) + 1;
-          const wanderThreshold = a.zone === "pool" ? 400 : 200;  // ~30s at 150ms/tick
-          const wanderProb      = a.zone === "pool" ? 0.05 : 0.15;
+          const wanderThreshold = a.zone === "pool" ? 600 : 350;  // long seated stays
+          // "Por ahí" toggle (cast panel): wander only when enabled
+          const wanderProb      = WD ? (a.zone === "pool" ? 0.04 : 0.08) : 0;
           if (a.idleTicks >= wanderThreshold && Math.random() < wanderProb) {
             a.idleTicks = 0;
             const wanderSlots = allS[a.zone] ?? [];
@@ -313,7 +337,7 @@ export function OfficeCanvas() {
 
   // ── Positions — driven by animRef ─────────────────────────────────────────────
   const ch = cw * BG_RATIO;
-  const agentList = DEMO_MODE ? DEMO_AGENTS : [...Array.from(agents.entries()), ...AMBIENT_AGENTS];
+  const agentList = DEMO_MODE ? DEMO_AGENTS : [...Array.from(agents.entries()), ...AMBIENT_AGENTS.filter(([aid]) => !workersOnly && !officeHidden.includes(aid))];
   const allSlots = { ...slots, ...deriveZoneSlots(lobbyZones) };
 
   type SpritePos = { agentId: string; charN: number; left: number; top: number; facing: 1|-1; col: number; animRow: number; inPool: boolean; zone: string; behindPool: boolean };

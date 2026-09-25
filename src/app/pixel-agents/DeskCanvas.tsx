@@ -2,36 +2,41 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useAgentData } from "./AgentDataContext";
+import { useTheme } from "./ThemeContext";
+import { useBackground } from "./BackgroundContext";
+import { useCast } from "./CastContext";
 import type { AgentRole, MultiAgentState, AgentEntry } from "./AgentDataContext";
 
 // ─── Sprite / Canvas Constants ────────────────────────────────────────────────
 
-// SC scales dynamically with container width — sprites resize with background
-const BASE_SC   = 4;      // scale at REF_WIDTH
-const REF_WIDTH = 1280;   // px — reference width where BASE_SC=4 looks correct
+const BASE_SC   = 4;
+const REF_WIDTH = 1280;
 
-const BG_W = 2064;
-const BG_H = 512;
+// Default fallback seats (used only if background has none)
+const DEFAULT_SEATS = [
+  { x: 0.079, y: 0.783, facing: 1 as const },
+  { x: 0.251, y: 0.783, facing: -1 as const },
+  { x: 0.421, y: 0.783, facing: 1 as const },
+  { x: 0.585, y: 0.783, facing: -1 as const },
+  { x: 0.750, y: 0.783, facing: 1 as const },
+  { x: 0.913, y: 0.783, facing: -1 as const },
+];
 
-// Workstation center X fractions measured from pixel-agents-desk-bg.png (2064×512px)
-const SEAT_X_FRACTIONS = [0.079, 0.251, 0.421, 0.585, 0.750, 0.913];
-const FLOOR_Y_FRACTION = 0.98;  // Y mientras caminan
-const SEAT_Y_FRACTION  = 0.783; // Y cuando están sentados en la silla
-const SEAT_Y_OFFSETS   = [-5, -10, 0, 0, 0, 0]; // px fine-tune per seat (negative = up)
+const FLOOR_Y_FRACTION = 0.97;
 
-const BASE_SPEED = 150; // px/s at REF_WIDTH — scales with container width
+const BASE_SPEED = 200;
 
-const AMBER = "sepia(1) saturate(2.5) hue-rotate(5deg) brightness(0.95)";
-const CYAN  = "sepia(1) saturate(2.5) hue-rotate(155deg) brightness(1.0)";
+const SCREEN_W_MULT = 2.4;
+const SCREEN_H_MULT = 0.75;
 
-// Monitor glow calibration — ajustar hasta que coincida con las pantallas
-const SCREEN_Y_FRACTION = 0.10;  // Y desde arriba (0=top, 1=bottom)
-const SCREEN_Y_NUDGE    = 50;    // desplazamiento adicional en px (positivo = abajo)
-const SCREEN_W_MULT     = 2.4;   // ancho del glow en múltiplos de fw
-const SCREEN_H_MULT     = 0.75;  // alto del glow en múltiplos de fh
-const SCREEN_X_OFFSET   = 1.5;   // centrado horizontal (fw * este valor = desplazamiento izq)
-const SCREEN_X_NUDGES   = [50, 35, 26, 26, 23, 23]; // px per seat (positivo = derecha)
-const SEAT_BRIGHTNESS   = [1.0, 1.0, 1.0, 0.80, 1.0, 1.0]; // brightness per seat (char_3 más oscuro)
+// Seated agents show torso only (top fraction); legs hide "behind the desk"
+const SEAT_CROP_TOP = 0.38;
+
+// Map image coords → container coords accounting for centered zoom crop
+// with vertical focus (focusY = center of the visible window, 0.5 = centered)
+function imgToC(imgFrac: number, zoom: number, focusY = 0.5): number {
+  return (imgFrac - focusY) * zoom + 0.5;
+}
 
 // ─── Animation Types ──────────────────────────────────────────────────────────
 
@@ -61,6 +66,16 @@ const RGB: Record<MultiAgentState, string> = {
   spawning:  "34,211,238",
 };
 
+const STATE_ICONS: Record<MultiAgentState, string> = {
+  idle:      "💤",
+  thinking:  "💭",
+  reading:   "📖",
+  editing:   "✏️",
+  running:   "⚡",
+  searching: "🔍",
+  waiting:   "⏳",
+  spawning:  "🚀",
+};
 
 // ─── Per-Agent Motion State ───────────────────────────────────────────────────
 
@@ -69,16 +84,25 @@ interface AgentMotion {
   targetX: number;
   moving: boolean;
   facing: 1 | -1;
+  seatFacing: 1 | -1; // facing to restore once seated
   walkingOut: boolean;
-  seatIndex: number;     // 0-5
-  frameTime: number;     // accumulated time for sprite animation (seconds)
-  frameIdx: number;      // current frame index in anim sequence
+  seatIndex: number;
+  frameTime: number;
+  frameIdx: number;
+  walkTime: number; // watchdog: snap to seat if walk-in takes too long
+  opacity: number; // walk-outs fade in place instead of running off
+  ax: number; // image-fraction x anchor (survives seat changes)
+  ay: number; // image-fraction y anchor (feet)
+  charN: number; // sprite variant (fixed at creation, no clothes-swapping)
 }
+
+// Max walk-in time before snapping to the seat (kills eternal walkers)
+const MAX_WALK_TIME = 12;
 
 // ─── Agent name mapping ───────────────────────────────────────────────────────
 
 function agentLabel(role: AgentRole, agentType?: string): string {
-  if (role === "main") return "claude";
+  if (role === "main") return agentType ? agentType.slice(0, 10) : "main";
   const map: Record<string, string> = {
     "gsd-executor":          "executor",
     "gsd-planner":           "planner",
@@ -112,44 +136,167 @@ function spriteCSS(anim: Anim, frameIdx: number, charN: number, sc: number): Rea
   };
 }
 
-function assignSeat(role: AgentRole, occupied: Set<number>): number {
+function assignSeat(role: AgentRole, occupied: Set<number>, seatCount: number, hasMain = false): number {
   if (role === "main") return 0;
-  for (let i = 1; i <= 5; i++) {
+  // Boss chair never sits empty: first sub takes seat 0 when no main is around
+  if (!hasMain && !occupied.has(0)) return 0;
+  for (let i = 1; i < seatCount; i++) {
     if (!occupied.has(i)) return i;
   }
-  return -1; // overflow — more than 5 sub-agents, hide
+  return -1;
+}
+
+// ─── Speech Bubble Component ─────────────────────────────────────────────────
+
+function SpeechBubble({ state, tool, detail, x, y, fw, sc, opacity, icon }: {
+  state: MultiAgentState;
+  tool?: string;
+  detail?: string;
+  x: number;
+  y: number;
+  fw: number;
+  sc: number;
+  opacity?: number;
+  icon?: string | null; // undefined = default state icon, null/"" = no icon
+}) {
+  const shownIcon = icon === undefined ? STATE_ICONS[state] : icon;
+  const text = tool ? `${tool}${detail ? `: ${detail}` : ""}` : detail ?? state;
+  const maxWidth = Math.max(80, fw * 6);
+  
+  return (
+    <div style={{
+      position: "absolute",
+      left: x + fw / 2,
+      top: y - 8,
+      transform: "translate(-50%, -100%)",
+      zIndex: 10,
+      pointerEvents: "none",
+      animation: "bubbleIn 0.3s ease-out",
+      opacity,
+    }}>
+      {/* Bubble body */}
+      <div style={{
+        background: "rgba(0,0,0,0.85)",
+        border: `1px solid rgba(${RGB[state]}, 0.5)`,
+        borderRadius: 6,
+        padding: `${Math.max(2, fw * 0.06)}px ${Math.max(4, fw * 0.12)}px`,
+        maxWidth,
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        fontFamily: "monospace",
+        fontSize: Math.max(7, Math.min(10, fw * 0.18)),
+        color: "rgba(255,255,255,0.9)",
+        boxShadow: `0 0 8px rgba(${RGB[state]}, 0.3)`,
+      }}>
+        {shownIcon ? <span style={{ marginRight: 4 }}>{shownIcon}</span> : null}
+        {text}
+      </div>
+      {/* Pointer triangle */}
+      <div style={{
+        width: 0,
+        height: 0,
+        borderLeft: "5px solid transparent",
+        borderRight: "5px solid transparent",
+        borderTop: `5px solid rgba(0,0,0,0.85)`,
+        margin: "0 auto",
+      }} />
+    </div>
+  );
 }
 
 // ─── DeskCanvas ───────────────────────────────────────────────────────────────
 
 export function DeskCanvas() {
   const { agents } = useAgentData();
+  const { theme } = useTheme();
+  const { background } = useBackground();
+  const { deskHidden, deskChar, workersOnly } = useCast();
   const containerRef = useRef<HTMLDivElement>(null);
   const containerWidthRef = useRef<number>(0);
   const [containerWidth, setContainerWidth] = useState(0);
   const motionRef = useRef<Map<string, AgentMotion>>(new Map());
-  // localAgentsRef: separate from context — keeps agents alive during walk-out
   const localAgentsRef = useRef<Map<string, AgentEntry>>(new Map());
   const rafRef = useRef<number>(0);
-  const [renderTick, setRenderTick] = useState(0); // triggers re-render
+  const [renderTick, setRenderTick] = useState(0);
   const occupiedSeatsRef = useRef<Set<number>>(new Set());
+  const [showBubbles, setShowBubbles] = useState(true);
+  // ?demo=1 URL flag (for testing/screenshots), applied after mount so
+  // server and client render identically (no hydration mismatch).
+  const [demoMode, setDemoMode] = useState(false);
+  useEffect(() => {
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("demo") === "1") {
+      setDemoMode(true);
+    }
+  }, []);
+  // ?cal=1: draw seat anchors + floor line so calibration offsets are measurable
+  const [calMode, setCalMode] = useState(false);
+  useEffect(() => {
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("cal") === "1") {
+      setCalMode(true);
+    }
+  }, []);
+  // Click-to-measure: in cal mode, clicking the scene shows the IMAGE-fraction
+  // coords of the click (inverse of imgToC) so chair bases can be read exactly.
+  const [calClick, setCalClick] = useState<{ imgX: number; imgY: number } | null>(null);
+  // Drag-to-place (cal mode): drag seat dots / ambient sprites onto furniture.
+  // Overrides persist per background in localStorage; the tuner panel shows
+  // the JSON to send back for permanent filing in office-backgrounds.ts.
+  const [seatOverrides, setSeatOverrides] = useState<Record<number, { x: number; y: number }>>({});
+  const [ambOverrides, setAmbOverrides] = useState<Record<number, { x: number; y: number }>>({});
+  const [drag, setDrag] = useState<null | { kind: "seat" | "amb"; index: number; imgX: number; imgY: number }>(null);
+  // Live sprite-scale override in cal mode (A−/A+ buttons); null = background value
+  const [calScale, setCalScale] = useState<number | null>(null);
+  // Live background-zoom override in cal mode (Z−/Z+ buttons); null = background value
+  const [calZoom, setCalZoom] = useState<number | null>(null);
+  useEffect(() => {
+    setCalClick(null); setDrag(null);
+    // Tuners (zoom/size) persist per background, like drag overrides
+    try {
+      const z = localStorage.getItem(`pixel-hq-zoom-${background.id}`);
+      const s = localStorage.getItem(`pixel-hq-scale-${background.id}`);
+      const zn = z !== null ? Number(z) : NaN;
+      const sn = s !== null ? Number(s) : NaN;
+      setCalZoom(!isNaN(zn) ? zn : null);
+      setCalScale(!isNaN(sn) ? sn : null);
+    } catch { setCalZoom(null); setCalScale(null); }
+    try {
+      const s = localStorage.getItem(`pixel-hq-seats-${background.id}`);
+      const a = localStorage.getItem(`pixel-hq-amb-${background.id}`);
+      setSeatOverrides(s ? JSON.parse(s) as Record<number, { x: number; y: number }> : {});
+      setAmbOverrides(a ? JSON.parse(a) as Record<number, { x: number; y: number }> : {});
+    } catch { setSeatOverrides({}); setAmbOverrides({}); }
+  }, [background.id]);
+  // Ambient life: advance decorative sitters' frames a few times per second
+  // (only while the current background defines ambient spots)
+  const [ambientTick, setAmbientTick] = useState(0);
+  useEffect(() => {
+    if (!(background.ambient?.length)) return;
+    const id = setInterval(() => setAmbientTick((t) => t + 1), 600);
+    return () => clearInterval(id);
+  }, [background]);
 
-  // ─── ResizeObserver: track container dimensions ──────────────────────────
+  // ─── ResizeObserver ─────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!containerRef.current) return;
+    const ez = calZoom ?? background.zoom;
+    const es = calScale ?? background.spriteScale;
+    const efy = background.focusY ?? 0.5;
     const ro = new ResizeObserver((entries) => {
       const newCw = entries[0].contentRect.width;
       const oldCw = containerWidthRef.current;
       const ratio  = oldCw > 0 ? newCw / oldCw : 1;
       containerWidthRef.current = newCw;
       setContainerWidth(newCw);
-      const newFw = Math.round(16 * BASE_SC * (newCw / REF_WIDTH));
-      // Scale existing positions proportionally + recalculate targets
+      const newFw = Math.round(16 * BASE_SC * es * (newCw / REF_WIDTH));
+      const seats = (background.seats.length > 0 ? background.seats : DEFAULT_SEATS).map((s, i) => ({ ...s, ...(seatOverrides[i] ?? {}) }));
       motionRef.current.forEach((motion) => {
         motion.x *= ratio;
         if (!motion.walkingOut) {
-          motion.targetX = SEAT_X_FRACTIONS[motion.seatIndex] * newCw - newFw / 2;
+          const seat = seats[motion.seatIndex] ?? seats[0];
+          motion.targetX = imgToC(seat.x, ez, efy) * newCw - newFw / 2;
+          motion.walkTime = 0; // fresh target: watchdog restarts
         } else {
           motion.targetX = motion.facing === 1 ? newCw + newFw : -newFw;
         }
@@ -157,9 +304,9 @@ export function DeskCanvas() {
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
-  }, []);
+  }, [background, calZoom, calScale, seatOverrides]);
 
-  // ─── Shared RAF loop: movement + frame animation ─────────────────────────
+  // ─── Shared RAF loop ────────────────────────────────────────────────────
 
   useEffect(() => {
     let last = performance.now();
@@ -170,18 +317,30 @@ export function DeskCanvas() {
 
       const speed = BASE_SPEED * (containerWidthRef.current > 0 ? containerWidthRef.current / REF_WIDTH : 1);
       motionRef.current.forEach((motion, agentId) => {
-        // Movement toward targetX
         const diff = motion.targetX - motion.x;
+        // Exiting agents hurry out (2x) so stale ghosts vanish fast
+        const stepPx = speed * dt * (motion.walkingOut ? 2 : 1);
         if (Math.abs(diff) > 1.5) {
-          motion.x += Math.min(Math.abs(diff), speed * dt) * Math.sign(diff);
+          motion.x += Math.min(Math.abs(diff), stepPx) * Math.sign(diff);
           motion.moving = true;
           motion.facing = diff > 0 ? 1 : -1;
           changed = true;
+          // Watchdog: never walk forever — snap to seat after MAX_WALK_TIME
+          if (!motion.walkingOut) {
+            motion.walkTime += dt;
+            if (motion.walkTime > MAX_WALK_TIME) {
+              motion.x = motion.targetX;
+              motion.moving = false;
+              motion.facing = motion.seatFacing;
+              changed = true;
+            }
+          }
         } else {
+          if (motion.moving && !motion.walkingOut) motion.facing = motion.seatFacing;
           motion.moving = false;
+          motion.walkTime = 0; // arrived: reset watchdog for the next walk
         }
 
-        // Frame animation
         const entry = localAgentsRef.current.get(agentId);
         if (entry) {
           const anim = motion.moving ? WALK : ANIMS[entry.state];
@@ -194,8 +353,12 @@ export function DeskCanvas() {
           }
         }
 
-        // Walk-out completion — agent reached edge, remove from local state
-        if (motion.walkingOut && Math.abs(motion.x - motion.targetX) < 2) {
+        // Walk-outs fade in place (~0.5s) instead of running off-screen
+        if (motion.walkingOut) {
+          motion.opacity = Math.max(0, motion.opacity - dt * 2);
+          changed = true;
+        }
+        if (motion.walkingOut && (motion.opacity <= 0 || Math.abs(motion.x - motion.targetX) < 2)) {
           localAgentsRef.current.delete(agentId);
           motionRef.current.delete(agentId);
           occupiedSeatsRef.current.delete(motion.seatIndex);
@@ -211,20 +374,55 @@ export function DeskCanvas() {
     return () => cancelAnimationFrame(rafRef.current);
   }, []);
 
-  // ─── Agents sync: walk-in for new agents, walk-out for removed ───────────
+  // ─── Agents sync ────────────────────────────────────────────────────────
+  const bgIdRef = useRef<string>("");
 
   useEffect(() => {
     const cw = containerWidthRef.current;
+    const seats = (background.seats.length > 0 ? background.seats : DEFAULT_SEATS).map((s, i) => ({ ...s, ...(seatOverrides[i] ?? {}) }));
+    const ez = calZoom ?? background.zoom;
+    const es = calScale ?? background.spriteScale;
+    const efy = background.focusY ?? 0.5;
 
-    // New agents → walk-in from edge
+    // Background changed: clear all seats so agents walk into the new scene
+    if (bgIdRef.current !== background.id) {
+      bgIdRef.current = background.id;
+      motionRef.current.clear();
+      localAgentsRef.current.clear();
+      occupiedSeatsRef.current.clear();
+    }
+
     agents.forEach((entry, agentId) => {
       if (!motionRef.current.has(agentId)) {
-        const seatIdx = assignSeat(entry.role, occupiedSeatsRef.current);
-        if (seatIdx === -1) return; // overflow — ignore
+        const hasMain = Array.from(agents.values()).some((e) => e.role === "main");
+        if (entry.role === "main" && occupiedSeatsRef.current.has(0)) {
+          // Boss is back: relocate whoever holds seat 0 to a free seat
+          const holder = Array.from(motionRef.current.entries()).find(([, m]) => m.seatIndex === 0 && !m.walkingOut);
+          const fwH = Math.round(16 * BASE_SC * es * (cw / REF_WIDTH));
+          let free = -1;
+          for (let i = 1; i < seats.length; i++) {
+            if (!occupiedSeatsRef.current.has(i)) { free = i; break; }
+          }
+          if (holder && free !== -1) {
+            const hm = holder[1];
+            occupiedSeatsRef.current.delete(0);
+            occupiedSeatsRef.current.add(free);
+            hm.seatIndex = free;
+            const hseat = seats[free];
+            hm.seatFacing = hseat.facing;
+            hm.ax = hseat.x;
+            hm.ay = hseat.y;
+            hm.targetX = imgToC(hseat.x, ez, efy) * cw - fwH / 2;
+            hm.moving = true;
+            hm.walkTime = 0;
+          }
+        }
+        const seatIdx = assignSeat(entry.role, occupiedSeatsRef.current, seats.length, hasMain);
+        if (seatIdx === -1) return;
         occupiedSeatsRef.current.add(seatIdx);
-        const fw0 = Math.round(16 * BASE_SC * (cw / REF_WIDTH));
-        const seatX = SEAT_X_FRACTIONS[seatIdx] * cw - fw0 / 2;
-        // Main agent enters from left, sub-agents from right
+        const fw0 = Math.round(16 * BASE_SC * es * (cw / REF_WIDTH));
+        const seat = seats[seatIdx];
+        const seatX = imgToC(seat.x, ez, efy) * cw - fw0 / 2;
         const startX = entry.role === "main" ? -fw0 : cw;
         const facing: 1 | -1 = entry.role === "main" ? 1 : -1;
         motionRef.current.set(agentId, {
@@ -232,48 +430,72 @@ export function DeskCanvas() {
           targetX: seatX,
           moving: true,
           facing,
+          seatFacing: seat.facing,
           walkingOut: false,
           seatIndex: seatIdx,
           frameTime: 0,
           frameIdx: 0,
+          walkTime: 0,
+          opacity: 1,
+          ax: seat.x,
+          ay: seat.y,
+          charN: seatIdx % 3, // workers share looks 0-2; ambient cast owns 3-5
         });
         localAgentsRef.current.set(agentId, entry);
       } else {
-        // Update existing agent entry (state may have changed)
         localAgentsRef.current.set(agentId, entry);
       }
     });
 
-    // Removed from context → trigger walk-out
     motionRef.current.forEach((motion, agentId) => {
       if (!agents.has(agentId) && !motion.walkingOut) {
         motion.walkingOut = true;
-        const fwOut = Math.round(16 * BASE_SC * (containerWidthRef.current / REF_WIDTH));
+        const fwOut = Math.round(16 * BASE_SC * es * (containerWidthRef.current / REF_WIDTH));
         motion.targetX = motion.facing === 1
           ? containerWidthRef.current + fwOut
           : -fwOut;
         motion.moving = true;
       }
     });
-  }, [agents]);
+  }, [agents, background, calZoom, calScale, seatOverrides]);
 
-  // ─── Render ──────────────────────────────────────────────────────────────
+  // ─── Render ─────────────────────────────────────────────────────────────
 
-  // Consume renderTick to silence unused-variable lint
   void renderTick;
 
-  const cw = containerWidth; // state — triggers re-render on resize
-  const ch = cw * (BG_H / BG_W); // derive height from aspect ratio
-  const sc = cw > 0 ? BASE_SC * (cw / REF_WIDTH) : BASE_SC;
+  const seats = background.seats.length > 0 ? background.seats : DEFAULT_SEATS;
+  // Effective seats = file values + CAL drag overrides (persisted per bg)
+  const effSeats = seats.map((s, i) => ({ ...s, ...(seatOverrides[i] ?? {}) }));
+  const commitDrag = () => {
+    if (!drag) return;
+    const v = { x: +drag.imgX.toFixed(3), y: +drag.imgY.toFixed(3) };
+    if (drag.kind === "seat") {
+      const n = { ...seatOverrides, [drag.index]: v };
+      try { localStorage.setItem(`pixel-hq-seats-${background.id}`, JSON.stringify(n)); } catch {}
+      setSeatOverrides(n);
+    } else {
+      const n = { ...ambOverrides, [drag.index]: v };
+      try { localStorage.setItem(`pixel-hq-amb-${background.id}`, JSON.stringify(n)); } catch {}
+      setAmbOverrides(n);
+    }
+    setDrag(null);
+  };
+  // In cal mode the tuners override zoom/scale live; null = background value
+  const zoom = calZoom ?? background.zoom;
+  const effScale = calScale ?? background.spriteScale;
+  // Vertical crop center (0.5 = centered, >0.5 = frame shifted down)
+  const fcy = background.focusY ?? 0.5;
+
+  const cw = containerWidth;
+  const ch = cw / background.aspectRatio;
+  const sc = cw > 0 ? BASE_SC * effScale * (cw / REF_WIDTH) : BASE_SC;
   const fw = Math.round(16 * sc);
   const fh = Math.round(32 * sc);
 
-  // DEMO MODE — muestra los 6 asientos con agentes ficticios para calibración visual
-  // Cambiar a false cuando las posiciones estén calibradas
-  const DEMO_MODE = false;
-  const demoStates: MultiAgentState[] = ["editing", "searching", "searching", "searching", "searching", "searching"];
+  const DEMO_MODE = demoMode;
+  const demoStates: MultiAgentState[] = ["editing", "searching", "reading", "running", "thinking", "waiting", "idle", "spawning", "editing", "searching"];
   const demoEntries: [string, AgentEntry][] = DEMO_MODE
-    ? SEAT_X_FRACTIONS.map((_, i) => [`demo-${i}`, {
+    ? seats.map((_, i) => [`demo-${i}`, {
         agentId: i === 0 ? "main" : `demo-${i}`,
         state: demoStates[i],
         role: (i === 0 ? "main" : "sub") as AgentRole,
@@ -281,129 +503,527 @@ export function DeskCanvas() {
         lastSeen: new Date().toISOString(),
       }])
     : [];
-  const demoFacing: (1 | -1)[] = [-1, -1, 1, 1, -1, -1]; // -1 = flipped (facing screen)
   const demoMotions = DEMO_MODE
-    ? SEAT_X_FRACTIONS.map((fx, i) => { const sx = fx * cw - fw / 2; return { x: sx, targetX: sx, moving: false, facing: demoFacing[i], walkingOut: false, seatIndex: i, frameTime: 0, frameIdx: 0 }; })
+    ? effSeats.map((seat, i) => { const sx = imgToC(seat.x, zoom, fcy) * cw - fw / 2; return { x: sx, targetX: sx, moving: false, facing: seat.facing, seatFacing: seat.facing, walkingOut: false, seatIndex: i, frameTime: 0, frameIdx: 0, walkTime: 0, opacity: 1, ax: seat.x, ay: seat.y, charN: i % 3 }; })
     : [];
+
+  // Per-theme decorative sitters (bar, reading corner...). Static, seated,
+  // never take agent seats and never walk: pure ambiance, zero tokens.
+  // The cast panel can hide any of them (or all, with workers-only mode).
+  const ambientDefs = (background.ambient ?? []).map((a, k) => ({ ...a, ...(ambOverrides[k] ?? {}) }));
+  const ambientPairs = ambientDefs
+    .map((a, k) => ({ a, k }))
+    .filter(({ k }) => !workersOnly && !deskHidden.includes(`${background.id}:${k}`));
+  const ambientEntries: [string, AgentEntry][] = DEMO_MODE
+    ? []
+    : ambientPairs.map(({ a, k }) => {
+        const id = `amb-${background.id}-${k}`;
+        return [id, {
+          agentId: id,
+          role: "sub" as AgentRole,
+          sessionId: "ambient",
+          state: a.state,
+          detail: a.detail,
+          lastSeen: "ambient",
+          agentType: a.label,
+        }];
+      });
+  const ambientMotions = new Map<string, AgentMotion>(ambientPairs.map(({ a, k }) => {
+    const id = `amb-${background.id}-${k}`;
+    const px = drag?.kind === "amb" && drag.index === k ? drag.imgX : a.x;
+    const py = drag?.kind === "amb" && drag.index === k ? drag.imgY : a.y;
+    const mx = imgToC(px, zoom, fcy) * cw - fw / 2;
+    return [id, {
+      x: mx, targetX: mx, moving: false, facing: a.facing, seatFacing: a.facing,
+      walkingOut: false, seatIndex: -1, frameTime: 0, frameIdx: ambientTick + k,
+      // Ambient cast (3-5) never shares looks with seated workers (0-2),
+      // unless pinned: file charN, then cast-panel pick (0-9, your call)
+      walkTime: 0, opacity: 1, charN: a.charN ?? deskChar[`${background.id}:${k}`] ?? (3 + (k % 3)), ax: px, ay: py,
+    }];
+  }));
+
+  const ambientById = new Map<string, (typeof ambientDefs)[number]>(
+    ambientPairs.map(({ a, k }) => [`amb-${background.id}-${k}`, a])
+  );
 
   const renderEntries: [string, AgentEntry][] = DEMO_MODE
     ? demoEntries
-    : Array.from(localAgentsRef.current.entries());
+    : [...Array.from(localAgentsRef.current.entries()), ...ambientEntries];
   const getMotion = (agentId: string, i: number): AgentMotion | undefined =>
-    DEMO_MODE ? demoMotions[i] : motionRef.current.get(agentId);
+    DEMO_MODE ? demoMotions[i] : (motionRef.current.get(agentId) ?? ambientMotions.get(agentId));
 
   return (
-    <div
-      ref={containerRef}
-      style={{
-        position: "relative",
-        width: "100%",
-        paddingBottom: `${(BG_H / BG_W) * 100}%`,
-        overflow: "hidden",
-        backgroundImage: "url(/pixel-agents-desk-bg.webp)",
-        backgroundSize: "100% 100%",
-        backgroundRepeat: "no-repeat",
-        imageRendering: "pixelated",
-      }}
-    >
-{/* Sprite characters — one per local agent */}
-      {renderEntries.map(([agentId, entry], i) => {
-        const motion = getMotion(agentId, i);
-        if (!motion) return null;
-        const seatIdx = motion.seatIndex;
-        const charN = Math.min(seatIdx, 5);
-        const anim = motion.moving ? WALK : ANIMS[entry.state];
-        const css = spriteCSS(anim, motion.frameIdx, charN, sc);
-        const floorY = motion.moving ? ch * FLOOR_Y_FRACTION - fh : ch * SEAT_Y_FRACTION - fh + (SEAT_Y_OFFSETS[seatIdx] ?? 0);
-        const bMult = SEAT_BRIGHTNESS[seatIdx] ?? 1.0;
-        const tint = bMult !== 1.0 ? `brightness(${bMult})` : undefined;
-        const rgb = RGB[entry.state];
-        const screenScale = sc / BASE_SC; // scales nudges proportionally with canvas size
-        return (
-          <React.Fragment key={`agent-${agentId}`}>
-            {/* Monitor screen glow — state color backlight */}
-            {!motion.moving && (
-              <div className="animate-pulse" style={{ animationDuration: "4s",
+    <div style={{ position: "relative" }}>
+      {/* Bubble toggle button */}
+      <button
+        onClick={() => setShowBubbles(b => !b)}
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 8,
+          zIndex: 20,
+          background: showBubbles ? `${theme.colors.statusLive}33` : theme.colors.panelHeader,
+          border: `1px solid ${showBubbles ? theme.colors.statusLive : theme.colors.panelBorder}`,
+          borderRadius: 4,
+          padding: "4px 8px",
+          color: showBubbles ? theme.colors.statusLive : theme.colors.textMuted,
+          fontSize: 10,
+          fontFamily: "monospace",
+          cursor: "pointer",
+        }}
+      >
+        💬 {showBubbles ? "ON" : "OFF"}
+      </button>
+      {/* Calibration toggle button (same as ?cal=1, no URL needed) */}
+      <button
+        onClick={() => { setCalMode(c => !c); setCalClick(null); setDrag(null); }}
+        title="Toggle seat calibration overlay"
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 76,
+          zIndex: 20,
+          background: calMode ? "rgba(0,255,255,0.15)" : theme.colors.panelHeader,
+          border: `1px solid ${calMode ? "#00ffff" : theme.colors.panelBorder}`,
+          borderRadius: 4,
+          padding: "4px 8px",
+          color: calMode ? "#00ffff" : theme.colors.textMuted,
+          fontSize: 10,
+          fontFamily: "monospace",
+          cursor: "pointer",
+        }}
+      >
+        📐 CAL
+      </button>
+
+      <div
+        ref={containerRef}
+        onClick={calMode ? (e) => {
+          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) return;
+          const cX = (e.clientX - rect.left) / rect.width;
+          const cY = (e.clientY - rect.top) / rect.height;
+          // inverse of imgToC with focus: img = (c - 0.5) / zoom + focusY
+          setCalClick({ imgX: (cX - 0.5) / zoom + fcy, imgY: (cY - 0.5) / zoom + fcy });
+        } : undefined}
+        onMouseMove={calMode ? (e) => {
+          if (!drag || !containerRef.current) return;
+          const rect = containerRef.current.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) return;
+          const cX = (e.clientX - rect.left) / rect.width;
+          const cY = (e.clientY - rect.top) / rect.height;
+          setDrag({ ...drag, imgX: (cX - 0.5) / zoom + fcy, imgY: (cY - 0.5) / zoom + fcy });
+        } : undefined}
+        onMouseUp={calMode ? commitDrag : undefined}
+        onMouseLeave={calMode ? commitDrag : undefined}
+        style={{
+          position: "relative",
+          width: "100%",
+          paddingBottom: `${(1 / background.aspectRatio) * 100}%`,
+          overflow: "hidden",
+          background: "#000",
+          cursor: calMode ? "crosshair" : undefined,
+        }}
+      >
+        {/* Background layer — zoomed to crop baked-in checkerboard edges */}
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          backgroundImage: `url(${background.image})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
+          imageRendering: "pixelated",
+          transform: `scale(${zoom}) translateY(${((0.5 - fcy) * 100).toFixed(1)}%)`,
+          transformOrigin: "center",
+          zIndex: 0,
+        }} />
+        {/* CSS animation for bubbles and monitor work */}
+        <style>{`
+          @keyframes bubbleIn {
+            from { opacity: 0; transform: translate(-50%, -80%); }
+            to { opacity: 1; transform: translate(-50%, -100%); }
+          }
+          @keyframes cursorBlink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+          }
+          @keyframes typeLine {
+            from { opacity: 0; transform: translateX(-10px); }
+            to { opacity: 1; transform: translateX(0); }
+          }
+          @keyframes pulse {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+          }
+          @keyframes scanLine {
+            0% { transform: translateY(-2px); }
+            50% { transform: translateY(2px); }
+            100% { transform: translateY(-2px); }
+          }
+          @keyframes searchPulse {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 0.7; }
+          }
+        `}</style>
+
+        {renderEntries.map(([agentId, entry], i) => {
+          const motion = getMotion(agentId, i);
+          if (!motion) return null;
+          const amb = ambientById.get(agentId);
+          const charN = motion.charN;
+          const anim = motion.moving ? WALK : ANIMS[entry.state];
+          const css = spriteCSS(anim, motion.frameIdx, charN, sc);
+          const seatCx = imgToC(motion.ax, zoom, fcy) * cw;
+          const seatCy = imgToC(motion.ay, zoom, fcy) * ch;
+          const walkCy = imgToC(background.floorY ?? FLOOR_Y_FRACTION, zoom, fcy) * ch;
+          const floorY = motion.moving ? walkCy - fh : seatCy - fh;
+          // Seated: crop to torso (legs hidden behind desk); head line for labels
+          const seated = !motion.moving;
+          const headY = seated ? floorY + fh * SEAT_CROP_TOP : floorY;
+          // Exiting agents fade out as a whole (sprite + glow + labels)
+          const fade = motion.walkingOut ? motion.opacity : 1;
+          const rgb = RGB[entry.state];
+          // Monitor glow anchored above the sprite (screen sits on the desk)
+          const glowLeft = motion.moving ? seatCx - fw * 1.2 : motion.x + fw / 2 - fw * (SCREEN_W_MULT / 2);
+          const glowTop = floorY - fh * 0.85;
+          return (
+            <React.Fragment key={`agent-${agentId}`}>
+              {/* Monitor screen glow (live agents only — ambient sitters have no screens) */}
+              {!motion.moving && entry.sessionId !== "ambient" && (
+                <div className="animate-pulse" style={{ animationDuration: "4s",
+                  position: "absolute",
+                  left: glowLeft,
+                  top: glowTop,
+                  width: fw * SCREEN_W_MULT,
+                  height: fh * SCREEN_H_MULT,
+                  background: `rgba(${rgb}, 0.28)`,
+                  filter: "blur(10px)",
+                  transition: "background 0.7s ease",
+                  pointerEvents: "none",
+                  zIndex: 1,
+                  opacity: fade,
+                }} />
+              )}
+              {/* Monitor work overlay — cursor + code lines */}
+              {!motion.moving && entry.sessionId !== "ambient" && (entry.state === "editing" || entry.state === "running" || entry.state === "reading" || entry.state === "searching") && (
+                <div style={{
+                  position: "absolute",
+                  left: glowLeft + fw * 0.3,
+                  top: glowTop + fh * 0.15,
+                  width: fw * SCREEN_W_MULT * 0.7,
+                  height: fh * SCREEN_H_MULT * 0.7,
+                  overflow: "hidden",
+                  pointerEvents: "none",
+                  zIndex: 2,
+                  opacity: fade,
+                }}>
+                  {/* Code lines */}
+                  <div style={{
+                    fontFamily: "monospace",
+                    fontSize: Math.max(5, Math.min(7, fw * 0.12)),
+                    color: `rgba(${rgb}, 0.6)`,
+                    lineHeight: 1.4,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                  }}>
+                    {entry.state === "editing" && (
+                      <>
+                        <div style={{ animation: "typeLine 0.8s ease-out forwards", opacity: 0 }}>
+                          <span style={{ color: "rgba(168,85,247,0.7)" }}>const</span>{' '}
+                          <span style={{ color: "rgba(52,211,153,0.7)" }}>agent</span>{' '}
+                          <span style={{ color: "rgba(255,255,255,0.4)" }}>=</span>{' '}
+                          <span style={{ color: "rgba(251,191,36,0.7)" }}>{'\"'}{entry.tool ?? '...'}{'\"'}</span>
+                        </div>
+                        <div style={{ animation: "typeLine 1.2s ease-out 0.3s forwards", opacity: 0 }}>
+                          <span style={{ color: "rgba(168,85,247,0.7)" }}>async</span>{' '}
+                          <span style={{ color: "rgba(56,189,248,0.7)" }}>function</span>{' '}
+                          <span style={{ color: "rgba(52,211,153,0.7)" }}>run</span>
+                          <span style={{ color: "rgba(255,255,255,0.4)" }}>{'()'}</span>{' '}
+                          <span style={{ color: "rgba(255,255,255,0.3)" }}>{'{'}</span>
+                        </div>
+                        <div style={{ animation: "typeLine 1.5s ease-out 0.6s forwards", opacity: 0 }}>
+                          {'  '}
+                          <span style={{ color: "rgba(168,85,247,0.7)" }}>await</span>{' '}
+                          <span style={{ color: "rgba(52,211,153,0.7)" }}>edit</span>
+                          <span style={{ color: "rgba(255,255,255,0.4)" }}>{'('}</span>
+                          <span style={{ color: "rgba(251,191,36,0.7)" }}>{entry.detail?.slice(0, 15) ?? '...'}</span>
+                          <span style={{ color: "rgba(255,255,255,0.4)" }}>{')'}</span>
+                        </div>
+                      </>
+                    )}
+                    {entry.state === "running" && (
+                      <>
+                        <div style={{ animation: "typeLine 0.5s ease-out forwards", opacity: 0 }}>
+                          <span style={{ color: "rgba(52,211,153,0.7)" }}>$</span>{' '}
+                          <span style={{ color: "rgba(255,255,255,0.6)" }}>{entry.detail?.slice(0, 25) ?? 'running...'}</span>
+                        </div>
+                        <div style={{ animation: "pulse 1s infinite", color: "rgba(16,185,129,0.5)" }}>
+                          {'>>'} processing...
+                        </div>
+                      </>
+                    )}
+                    {entry.state === "reading" && (
+                      <>
+                        <div style={{ animation: "typeLine 0.6s ease-out forwards", opacity: 0 }}>
+                          <span style={{ color: "rgba(99,102,241,0.7)" }}>{'📄'}</span>{' '}
+                          <span style={{ color: "rgba(255,255,255,0.5)" }}>{entry.detail?.slice(0, 20) ?? 'file...'}</span>
+                        </div>
+                        <div style={{ animation: "scanLine 2s infinite", color: "rgba(99,102,241,0.4)" }}>
+                          scanning lines...
+                        </div>
+                      </>
+                    )}
+                    {entry.state === "searching" && (
+                      <>
+                        <div style={{ animation: "typeLine 0.4s ease-out forwards", opacity: 0 }}>
+                          <span style={{ color: "rgba(167,139,250,0.7)" }}>{'🔍'}</span>{' '}
+                          <span style={{ color: "rgba(255,255,255,0.5)" }}>{entry.detail?.slice(0, 20) ?? 'query...'}</span>
+                        </div>
+                        <div style={{ animation: "searchPulse 1.5s infinite", color: "rgba(167,139,250,0.4)" }}>
+                          finding matches...
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  {/* Blinking cursor */}
+                  <div style={{
+                    position: "absolute",
+                    bottom: "20%",
+                    left: "10%",
+                    width: Math.max(4, fw * 0.08),
+                    height: Math.max(6, fw * 0.12),
+                    background: `rgba(${rgb}, 0.8)`,
+                    animation: "cursorBlink 1s infinite",
+                  }} />
+                </div>
+              )}
+              {/* Sprite (seated = torso clip, legs behind desk) */}
+              <div
+                onMouseDown={calMode && amb ? (e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  const k = Number(agentId.split("-").pop());
+                  const def = ambientDefs[k];
+                  if (def) setDrag({ kind: "amb", index: k, imgX: def.x, imgY: def.y });
+                } : undefined}
+                title={amb ? "Arrastra este personaje a su sitio (se guarda solo)" : undefined}
+                style={{
                 position: "absolute",
-                left: SEAT_X_FRACTIONS[seatIdx] * cw - fw * SCREEN_X_OFFSET + (SCREEN_X_NUDGES[seatIdx] ?? 40) * screenScale,
-                top: ch * SCREEN_Y_FRACTION + SCREEN_Y_NUDGE * screenScale,
-                width: fw * SCREEN_W_MULT,
-                height: fh * SCREEN_H_MULT,
-                background: `rgba(${rgb}, 0.28)`,
-                filter: "blur(10px)",
-                transition: "background 0.7s ease",
-                pointerEvents: "none",
-                zIndex: 0,
-              }} />
-            )}
-            {/* Sprite */}
+                left: motion.x,
+                top: headY,
+                width: fw,
+                height: seated ? fh * (1 - SEAT_CROP_TOP) : fh,
+                overflow: seated ? "hidden" : undefined,
+                transition: motion.moving ? undefined : "top 0.4s ease",
+                pointerEvents: calMode && amb ? "auto" : "none",
+                cursor: calMode && amb ? "grab" : undefined,
+                zIndex: 3,
+                opacity: fade,
+              }}>
+                <div style={{
+                  width: fw,
+                  height: fh,
+                  transform: motion.facing === -1 ? "scaleX(-1)" : undefined,
+                  ...css,
+                }} />
+              </div>
+              {/* Speech bubble */}
+              {showBubbles && !motion.moving && (entry.tool || entry.detail) && (
+                <SpeechBubble
+                  state={entry.state}
+                  tool={entry.tool}
+                  detail={entry.detail}
+                  x={motion.x}
+                  y={headY}
+                  fw={fw}
+                  sc={sc}
+                  opacity={fade}
+                  icon={amb ? (amb.icon || null) : undefined}
+                />
+              )}
+              {/* Name + state labels */}
+              {!motion.moving && (
+                <div style={{
+                  position: "absolute",
+                  left: motion.x + fw / 2,
+                  top: headY - Math.max(20, fw * 0.55),
+                  transform: "translateX(-50%)",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: Math.max(1, fw * 0.02),
+                  pointerEvents: "none",
+                  zIndex: 4,
+                  opacity: fade,
+                }}>
+                  <div style={{
+                    color: entry.role === "main" ? theme.colors.nameMain : theme.colors.nameSub,
+                    background: theme.colors.panelBg,
+                    fontSize: Math.max(6, Math.min(10, fw * 0.16)),
+                    fontFamily: "monospace",
+                    letterSpacing: "0.08em",
+                    padding: `${Math.max(1, fw * 0.02)}px ${Math.max(2, fw * 0.07)}px`,
+                    borderRadius: 3,
+                    whiteSpace: "nowrap",
+                  }}>
+                    {agentLabel(entry.role, entry.agentType)}
+                  </div>
+                  <div style={{
+                    color: theme.colors[`state${entry.state.charAt(0).toUpperCase() + entry.state.slice(1)}` as keyof typeof theme.colors] ?? `rgb(${rgb})`,
+                    background: theme.colors.panelBg,
+                    fontSize: Math.max(7, Math.min(12, fw * 0.19)),
+                    fontFamily: "monospace",
+                    letterSpacing: "0.05em",
+                    padding: `${Math.max(1, fw * 0.03)}px ${Math.max(2, fw * 0.08)}px`,
+                    borderRadius: 3,
+                    whiteSpace: "nowrap",
+                    transition: "color 0.5s ease",
+                  }}>
+                    {entry.state}
+                  </div>
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
+
+        {/* ─── Calibration overlay (?cal=1): seat anchors + floor line ─── */}
+        {calMode && (
+          <div style={{ position: "absolute", inset: 0, zIndex: 40, pointerEvents: "none" }}>
+            {/* Live sprite-scale + bg-zoom tuners */}
             <div style={{
               position: "absolute",
-              left: motion.x,
-              top: floorY,
-              width: fw,
-              height: fh,
-              filter: tint,
-              transform: motion.facing === -1 ? "scaleX(-1)" : undefined,
-              transition: motion.moving ? undefined : "top 0.4s ease",
-              pointerEvents: "none",
-              zIndex: 1,
-              ...css,
-            }} />
-            {/* Name + state labels */}
-            {!motion.moving && (
-              <div style={{
-                position: "absolute",
-                left: motion.x + fw / 2,
-                top: floorY - Math.max(20, fw * 0.55),
-                transform: "translateX(-50%)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: Math.max(1, fw * 0.02),
-                pointerEvents: "none",
-                zIndex: 2,
-              }}>
-                {/* Agent name */}
-                <div style={{
-                  color: entry.role === "main" ? "rgba(251,191,36,0.9)" : "rgba(255,255,255,0.55)",
-                  background: "rgba(0,0,0,0.55)",
-                  fontSize: Math.max(6, Math.min(10, fw * 0.16)),
-                  fontFamily: "monospace",
-                  letterSpacing: "0.08em",
-                  padding: `${Math.max(1, fw * 0.02)}px ${Math.max(2, fw * 0.07)}px`,
-                  borderRadius: 3,
-                  whiteSpace: "nowrap",
-                }}>
-                  {agentLabel(entry.role, entry.agentType)}
-                </div>
-                {/* State */}
-                <div style={{
-                  color: `rgb(${rgb})`,
-                  background: "rgba(0,0,0,0.65)",
-                  fontSize: Math.max(7, Math.min(12, fw * 0.19)),
-                  fontFamily: "monospace",
-                  letterSpacing: "0.05em",
-                  padding: `${Math.max(1, fw * 0.03)}px ${Math.max(2, fw * 0.08)}px`,
-                  borderRadius: 3,
-                  whiteSpace: "nowrap",
-                  transition: "color 0.5s ease",
-                }}>
-                  {entry.state}
-                </div>
+              left: 8,
+              top: 8,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              pointerEvents: "auto",
+              fontFamily: "monospace",
+              fontSize: 14,
+              color: "#00ffff",
+              background: "rgba(0,0,0,0.8)",
+              padding: "4px 8px",
+              borderRadius: 4,
+              border: "1px solid rgba(0,255,255,0.4)",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button onClick={() => { const n = +((calScale ?? background.spriteScale) - 0.05).toFixed(2); setCalScale(n); try { localStorage.setItem(`pixel-hq-scale-${background.id}`, String(n)); } catch {} }}
+                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>A−</button>
+                <span>size {effScale.toFixed(2)}</span>
+                <button onClick={() => { const n = +((calScale ?? background.spriteScale) + 0.05).toFixed(2); setCalScale(n); try { localStorage.setItem(`pixel-hq-scale-${background.id}`, String(n)); } catch {} }}
+                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>A+</button>
               </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button onClick={() => { const n = +(Math.max(1.0, (calZoom ?? background.zoom) - 0.02)).toFixed(2); setCalZoom(n); try { localStorage.setItem(`pixel-hq-zoom-${background.id}`, String(n)); } catch {} }}
+                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>Z−</button>
+                <span>zoom {zoom.toFixed(2)}</span>
+                <button onClick={() => { const n = +(Math.min(1.6, (calZoom ?? background.zoom) + 0.02)).toFixed(2); setCalZoom(n); try { localStorage.setItem(`pixel-hq-zoom-${background.id}`, String(n)); } catch {} }}
+                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>Z+</button>
+              </div>
+              <button onClick={() => {
+                setCalScale(null); setCalZoom(null); setCalClick(null);
+                setSeatOverrides({}); setAmbOverrides({}); setDrag(null);
+                try {
+                  localStorage.removeItem(`pixel-hq-seats-${background.id}`);
+                  localStorage.removeItem(`pixel-hq-amb-${background.id}`);
+                  localStorage.removeItem(`pixel-hq-zoom-${background.id}`);
+                  localStorage.removeItem(`pixel-hq-scale-${background.id}`);
+                } catch {}
+              }}
+                title="Volver a los valores del archivo (los agentes caminan de vuelta)"
+                style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "2px 8px" }}>↺ Restaurar</button>
+              {(Object.keys(seatOverrides).length > 0 || Object.keys(ambOverrides).length > 0 || calZoom !== null || calScale !== null) && (
+                <pre title="Mándame este texto y grabo las posiciones en el archivo"
+                  style={{ margin: 0, fontSize: 10, color: "#7dffce", whiteSpace: "pre-wrap", maxWidth: 230 }}>
+                  {JSON.stringify({ bg: background.id, zoom: +zoom.toFixed(2), size: +effScale.toFixed(2), seats: seatOverrides, amb: ambOverrides })}
+                </pre>
+              )}
+            </div>
+            {/* Floor line */}
+            <div style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              top: imgToC(background.floorY ?? FLOOR_Y_FRACTION, zoom, fcy) * ch,
+              borderTop: "2px dashed rgba(255,0,0,0.8)",
+            }} />
+            {effSeats.map((seat, i) => {
+              const sx = drag?.kind === "seat" && drag.index === i ? drag.imgX : seat.x;
+              const sy = drag?.kind === "seat" && drag.index === i ? drag.imgY : seat.y;
+              const cx = imgToC(sx, zoom, fcy) * cw;
+              const cy = imgToC(sy, zoom, fcy) * ch;
+              return (
+                <div key={`cal-seat-${i}`}
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    setDrag({ kind: "seat", index: i, imgX: seat.x, imgY: seat.y });
+                  }}
+                  title={`Arrastra el asiento #${i} hasta su silla (se guarda solo)`}
+                  style={{
+                    position: "absolute",
+                    left: cx,
+                    top: cy,
+                    transform: "translate(-50%, -50%)",
+                    width: 16,
+                    height: 16,
+                    borderRadius: "50%",
+                    background: "rgba(255,0,0,0.8)",
+                    boxShadow: "0 0 0 1px #fff",
+                    cursor: "grab",
+                    pointerEvents: "auto",
+                  }}>
+                  <div style={{
+                    position: "absolute",
+                    left: 6,
+                    top: 6,
+                    fontFamily: "monospace",
+                    fontSize: 15,
+                    color: "#ff4444",
+                    background: "rgba(0,0,0,0.7)",
+                    padding: "0 4px",
+                    whiteSpace: "nowrap",
+                  }}>
+                    #{i} ({Math.round(sx * 100)}%, {Math.round(sy * 100)}%)
+                  </div>
+                </div>
+              );
+            })}
+            {/* Click measurement readout */}
+            {calClick && (
+              <>
+                <div style={{
+                  position: "absolute",
+                  left: imgToC(calClick.imgX, zoom, fcy) * cw,
+                  top: imgToC(calClick.imgY, zoom, fcy) * ch,
+                  transform: "translate(-50%, -50%)",
+                  width: 14,
+                  height: 14,
+                  border: "2px solid rgba(0,255,255,0.9)",
+                  borderRadius: "50%",
+                  boxShadow: "0 0 0 1px #000",
+                }} />
+                <div style={{
+                  position: "absolute",
+                  left: 8,
+                  bottom: 8,
+                  fontFamily: "monospace",
+                  fontSize: 16,
+                  color: "#00ffff",
+                  background: "rgba(0,0,0,0.8)",
+                  padding: "4px 10px",
+                  borderRadius: 4,
+                  border: "1px solid rgba(0,255,255,0.4)",
+                }}>
+                  click → x={calClick.imgX.toFixed(3)} y={calClick.imgY.toFixed(3)}
+                </div>
+              </>
             )}
-          </React.Fragment>
-        );
-      })}
-
-      {/* DEBUG markers — uncomment to calibrate seat positions
-      {SEAT_X_FRACTIONS.map((fx, i) => (
-        <div key={i} style={{ position: "absolute", left: `${fx * 100}%`, top: `${FLOOR_Y_FRACTION * 100}%`, width: 4, height: 20, background: "red", transform: "translate(-50%, -100%)", pointerEvents: "none", zIndex: 10 }}>
-          <span style={{ position: "absolute", top: -18, left: -4, color: "red", fontSize: 10, fontWeight: "bold", whiteSpace: "nowrap" }}>{i}</span>
-        </div>
-      ))}
-      */}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

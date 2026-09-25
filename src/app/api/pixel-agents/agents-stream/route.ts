@@ -1,14 +1,18 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
+import { DatabaseSync } from "node:sqlite";
+import os from "node:os";
+import path from "node:path";
 
-// Mount your ~/.claude directory into the container and set this env var.
-// Default: /dot-claude/projects/-root (Claude Code running from home directory)
-// If you run Claude Code from /home/user/myproject, set:
-//   CLAUDE_JSONL_DIR=/dot-claude/projects/-home-user-myproject
-const JSONL_DIR = process.env.CLAUDE_JSONL_DIR ?? "/dot-claude/projects/-root";
+// OpenCode adaptation: instead of tailing Claude Code .jsonl files,
+// poll the OpenCode SQLite database (~/.local/share/opencode/opencode.db).
+// Event contract (snapshot / agent_update / agent_end) is unchanged so the
+// DeskCanvas + OfficeCanvas frontend works without modifications.
+const DB_PATH =
+  process.env.OPENCODE_DB ??
+  path.join(os.homedir(), ".local", "share", "opencode", "opencode.db");
 const POLL_MS = 600;
-const STALE_MS = 30_000;
+const IDLE_MS = 10_000;
+const MAX_AGENTS = 6;
 
 export type AgentRole = "main" | "sub";
 
@@ -33,129 +37,167 @@ export interface AgentUpdateEvent {
   agentType?: string;
 }
 
-interface TrackedFile {
-  path: string;
-  agentId: string;
-  size: number;
-  lastGrew: number;
+interface SessionRow {
+  id: string;
+  title: string;
+  agent: string;
+  slug: string | null;
+  time_updated: number;
 }
 
-function getActiveMainJSONL(): { file: string; sessionId: string } | null {
+interface PartRow {
+  id: string;
+  session_id: string;
+  message_id: string;
+  time_created: number;
+  data: string;
+}
+
+let db: DatabaseSync | null = null;
+function getDb(): DatabaseSync | null {
   try {
-    const files = fs
-      .readdirSync(JSONL_DIR)
-      .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => {
-        const full = path.join(JSONL_DIR, f);
-        return { file: full, mtime: fs.statSync(full).mtimeMs };
-      })
-      .sort((a, b) => b.mtime - a.mtime);
-    if (!files[0]) return null;
-    const sessionId = path.basename(files[0].file, ".jsonl");
-    return { file: files[0].file, sessionId };
+    if (!db) db = new DatabaseSync(DB_PATH, { readOnly: true });
+    return db;
   } catch {
     return null;
   }
 }
 
-function getSubagentFiles(sessionId: string): { file: string; agentId: string }[] {
+function msToIso(ms: number): string {
   try {
-    const subDir = path.join(JSONL_DIR, sessionId, "subagents");
-    if (!fs.existsSync(subDir)) return [];
-    return fs
-      .readdirSync(subDir)
-      .filter((f) => f.endsWith(".jsonl") && !f.includes("compact"))
-      .map((f) => ({
-        file: path.join(subDir, f),
-        agentId: f.replace("agent-", "").replace(".jsonl", ""),
-      }));
+    return new Date(ms).toISOString();
+  } catch {
+    return new Date().toISOString();
+  }
+}
+
+function getRecentSessions(limit: number): SessionRow[] {
+  const d = getDb();
+  if (!d) return [];
+  try {
+    return d
+      .prepare(
+        `SELECT id, title, agent, slug, time_updated FROM session
+         WHERE (time_archived IS NULL OR time_archived = 0)
+         ORDER BY time_updated DESC LIMIT ?`
+      )
+      .all(limit) as unknown as SessionRow[];
   } catch {
     return [];
   }
 }
 
-function readAgentType(filePath: string): string | undefined {
+function getLatestPart(sessionId: string): PartRow | null {
+  const d = getDb();
+  if (!d) return null;
   try {
-    const metaPath = filePath.replace(".jsonl", ".meta.json");
-    if (!fs.existsSync(metaPath)) return undefined;
-    return JSON.parse(fs.readFileSync(metaPath, "utf8")).agentType ?? undefined;
+    const row = d
+      .prepare(
+        `SELECT id, session_id, message_id, time_created, data FROM part
+         WHERE session_id = ? ORDER BY time_created DESC, rowid DESC LIMIT 1`
+      )
+      .get(sessionId) as unknown as PartRow | undefined;
+    return row ?? null;
   } catch {
-    return undefined;
+    return null;
   }
 }
 
-interface ParsedLine {
+function getMessageRole(messageId: string): string | null {
+  const d = getDb();
+  if (!d) return null;
+  try {
+    const row = d
+      .prepare(`SELECT data FROM message WHERE id = ?`)
+      .get(messageId) as unknown as { data: string } | undefined;
+    if (!row) return null;
+    const data = JSON.parse(row.data) as { role?: string };
+    return data.role ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function toolToState(tool: string): MultiAgentState {
+  const t = tool.toLowerCase();
+  if (t === "read") return "reading";
+  if (t === "edit" || t === "write" || t === "patch") return "editing";
+  if (t === "bash" || t === "execute") return "running";
+  if (t === "grep" || t === "glob" || t === "codesearch") return "searching";
+  if (t === "webfetch" || t === "websearch") return "searching";
+  if (t === "task" || t === "subagent") return "spawning";
+  return "running";
+}
+
+function toolDetail(tool: string, state: Record<string, unknown>): string {
+  try {
+    const input = (state.input ?? {}) as Record<string, unknown>;
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    if (tool === "read" || tool === "edit" || tool === "write") {
+      const p = str(input.filePath ?? input.path ?? input.file ?? "");
+      return p.split(/[/\\]/).pop()?.slice(0, 40) ?? tool;
+    }
+    if (tool === "bash") return str(input.command ?? input.cmd).slice(0, 80);
+    if (tool === "grep" || tool === "glob")
+      return str(input.pattern ?? input.query).slice(0, 60);
+    if (tool === "webfetch" || tool === "websearch")
+      return str(input.url ?? input.query).slice(0, 60);
+    if (tool === "task" || tool === "subagent")
+      return str(input.description ?? input.prompt).slice(0, 60);
+    return JSON.stringify(input).slice(0, 60);
+  } catch {
+    return tool;
+  }
+}
+
+interface ParsedPart {
   state: MultiAgentState;
   tool?: string;
   detail?: string;
-  sessionId: string;
   timestamp: string;
 }
 
-function parseLine(raw: string, expectSidechain: boolean): ParsedLine | null {
+function parsePart(part: PartRow): ParsedPart | null {
   try {
-    const d = JSON.parse(raw.trim());
-    if ((d.isSidechain === true) !== expectSidechain) return null;
-    const ts: string = d.timestamp ?? new Date().toISOString();
-    const sessionId: string = d.sessionId ?? "";
-    const msg = d.message;
-    if (msg?.role === "assistant" && Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (block?.type === "tool_use") {
-          const name: string = block.name ?? "";
-          const input = block.input ?? {};
-          if (name === "Read") return { state: "reading", tool: name, detail: input.file_path ?? "", sessionId, timestamp: ts };
-          if (name === "Edit" || name === "Write" || name === "NotebookEdit") return { state: "editing", tool: name, detail: input.file_path ?? "", sessionId, timestamp: ts };
-          if (name === "Bash") return { state: "running", tool: name, detail: (input.command ?? "").slice(0, 80), sessionId, timestamp: ts };
-          if (name === "Grep" || name === "Glob") return { state: "searching", tool: name, detail: input.pattern ?? input.glob ?? "", sessionId, timestamp: ts };
-          if (name === "Agent") return { state: "spawning", tool: name, detail: input.description ?? "sub-agent", sessionId, timestamp: ts };
-          if (name === "WebFetch" || name === "WebSearch") return { state: "searching", tool: name, detail: input.url ?? input.query ?? "", sessionId, timestamp: ts };
-          return { state: "running", tool: name, detail: JSON.stringify(input).slice(0, 60), sessionId, timestamp: ts };
-        }
-        if (block?.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-          return { state: "thinking", tool: undefined, detail: block.text.slice(0, 60), sessionId, timestamp: ts };
-        }
-      }
+    const d = JSON.parse(part.data) as {
+      type?: string;
+      tool?: string;
+      text?: string;
+      state?: Record<string, unknown>;
+    };
+    const ts = msToIso(part.time_created);
+    if (d.type === "tool" && d.tool) {
+      const st = (d.state ?? {}) as { status?: string };
+      const state = toolToState(d.tool);
+      return { state, tool: d.tool, detail: toolDetail(d.tool, d.state ?? {}), timestamp: ts };
     }
-    if (msg?.role === "user") {
-      const content = msg.content;
-      if (typeof content === "string" && content.trim() && !content.includes("local-command") && !content.includes("tool_result")) {
-        return { state: "waiting", tool: undefined, detail: content.slice(0, 60), sessionId, timestamp: ts };
-      }
-      if (Array.isArray(content)) {
-        const hasToolResult = content.some((b: { type?: string }) => b?.type === "tool_result");
-        if (!hasToolResult) {
-          const text = content.find((b: { type?: string; text?: string }) => b?.type === "text")?.text ?? "";
-          if (text && !text.includes("local-command")) return { state: "waiting", tool: undefined, detail: text.slice(0, 60), sessionId, timestamp: ts };
-        }
-      }
+    if (d.type === "text" && typeof d.text === "string" && d.text.trim()) {
+      const role = getMessageRole(part.message_id);
+      if (role === "user") return { state: "waiting", detail: d.text.slice(0, 60), timestamp: ts };
+      return { state: "thinking", detail: d.text.slice(0, 60), timestamp: ts };
     }
-  } catch { /* malformed */ }
-  return null;
+    if (d.type === "reasoning") return { state: "thinking", timestamp: ts };
+    if (d.type === "step-finish") return { state: "idle", timestamp: ts };
+    return null;
+  } catch {
+    return null;
+  }
 }
 
-function readNewLines(filePath: string, from: number, to: number, expectSidechain: boolean): ParsedLine[] {
-  try {
-    const len = to - from;
-    if (len <= 0) return [];
-    const fd = fs.openSync(filePath, "r");
-    const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, from);
-    fs.closeSync(fd);
-    return buf.toString("utf8").split("\n").filter(Boolean).map((l) => parseLine(l, expectSidechain)).filter((e): e is ParsedLine => e !== null);
-  } catch { return []; }
+interface TrackedSession {
+  sessionId: string;
+  agentId: string;
+  role: AgentRole;
+  agentType?: string;
+  title: string;
+  lastPartId: string | null;
+  lastSeen: number;
+  idleSent: boolean;
+  misses: number; // consecutive polls absent (grace before agent_end)
 }
 
-function readRecentLines(filePath: string, n: number, expectSidechain: boolean): ParsedLine[] {
-  try {
-    const lines = fs.readFileSync(filePath, "utf8").split("\n").filter(Boolean);
-    const events: ParsedLine[] = [];
-    for (const line of lines) {
-      const ev = parseLine(line, expectSidechain);
-      if (ev) { events.push(ev); if (events.length > n * 3) events.shift(); }
-    }
-    return events.slice(-n);
-  } catch { return []; }
+function shortTitle(title: string): string {
+  return (title || "agent").slice(0, 24);
 }
 
 export async function GET() {
@@ -163,85 +205,173 @@ export async function GET() {
   const stream = new ReadableStream({
     start(controller) {
       let closed = false;
-      let currentSessionId: string | null = null;
-      const tracked = new Map<string, TrackedFile>();
+      const tracked = new Map<string, TrackedSession>();
+      // Stable main: assigned once to the newest session, never stolen by
+      // recency flips (reassigning caused permanent frontend ghosts).
+      // Reset only when the main session itself expires (after agent_end).
+      let mainSessionId: string | null = null;
 
       function send(event: string, data: unknown) {
         if (closed) return;
-        try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }
-        catch { closed = true; }
-      }
-
-      function emitUpdate(parsed: ParsedLine, agentId: string, role: AgentRole, agentType?: string) {
-        send("agent_update", { agentId, role, sessionId: parsed.sessionId || currentSessionId || "", state: parsed.state, tool: parsed.tool, detail: parsed.detail, timestamp: parsed.timestamp, agentType } satisfies AgentUpdateEvent);
-      }
-
-      function initSession(sessionId: string) {
-        currentSessionId = sessionId;
-        tracked.clear();
-        const snapshot: AgentUpdateEvent[] = [];
-        const mainPath = path.join(JSONL_DIR, `${sessionId}.jsonl`);
         try {
-          tracked.set("main", { path: mainPath, agentId: "main", size: fs.statSync(mainPath).size, lastGrew: Date.now() });
-          const last = readRecentLines(mainPath, 5, false).slice(-1)[0];
-          if (last) snapshot.push({ agentId: "main", role: "main", sessionId: last.sessionId || sessionId, state: last.state, tool: last.tool, detail: last.detail, timestamp: last.timestamp });
-        } catch { /* no main file yet */ }
-        for (const { file, agentId } of getSubagentFiles(sessionId)) {
-          try {
-            const agentType = readAgentType(file);
-            tracked.set(agentId, { path: file, agentId, size: fs.statSync(file).size, lastGrew: Date.now() });
-            const last = readRecentLines(file, 5, true).slice(-1)[0];
-            if (last) snapshot.push({ agentId, role: "sub", sessionId: last.sessionId || sessionId, state: last.state, tool: last.tool, detail: last.detail, timestamp: last.timestamp, agentType });
-          } catch { /* skip */ }
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          closed = true;
         }
-        send("snapshot", snapshot);
+      }
+
+      function emitUpdate(ts: TrackedSession, parsed: ParsedPart) {
+        send("agent_update", {
+          agentId: ts.agentId,
+          role: ts.role,
+          sessionId: ts.sessionId,
+          state: parsed.state,
+          tool: parsed.tool,
+          detail: parsed.detail ?? shortTitle(ts.title),
+          timestamp: parsed.timestamp,
+          agentType: ts.agentType,
+        } satisfies AgentUpdateEvent);
+      }
+
+      function refreshSessions(): SessionRow[] {
+        const sessions = getRecentSessions(MAX_AGENTS);
+        const now = Date.now();
+        // Lock "main" to the newest session only when unset (stable IDs).
+        if (mainSessionId === null && sessions.length > 0) {
+          mainSessionId = sessions[0].id;
+        }
+        sessions.forEach((s) => {
+          const isMain = s.id === mainSessionId;
+          if (!tracked.has(s.id)) {
+            tracked.set(s.id, {
+              sessionId: s.id,
+              agentId: isMain ? "main" : `sub-${s.id.slice(-6)}`,
+              role: isMain ? "main" : "sub",
+              agentType: s.agent || undefined,
+              title: s.title || "agent",
+              lastPartId: null,
+              lastSeen: now,
+              idleSent: false,
+              misses: 0,
+            });
+          } else {
+            const t = tracked.get(s.id)!;
+            t.title = s.title || t.title;
+            if (s.agent) t.agentType = s.agent;
+          }
+        });
+        return sessions;
+      }
+
+      function snapshot() {
+        const sessions = refreshSessions();
+        const now = Date.now();
+        const entries: AgentUpdateEvent[] = [];
+        for (const s of sessions) {
+          // Only show sessions active in the last 15 min
+          if (now - s.time_updated > 15 * 60_000) continue;
+          const t = tracked.get(s.id)!;
+          const part = getLatestPart(s.id);
+          let state: MultiAgentState = "idle";
+          let tool: string | undefined;
+          let detail: string | undefined;
+          let ts = msToIso(s.time_updated);
+          if (part) {
+            t.lastPartId = part.id;
+            const parsed = parsePart(part);
+            if (parsed) {
+              state = parsed.state;
+              tool = parsed.tool;
+              detail = parsed.detail;
+              ts = parsed.timestamp;
+              // A finished tool from a while ago means the agent is composing
+              if (now - part.time_created > IDLE_MS && (state === "reading" || state === "editing" || state === "running" || state === "searching")) {
+                state = "thinking";
+              }
+            }
+          }
+          t.lastSeen = now;
+          entries.push({
+            agentId: t.agentId,
+            role: t.role,
+            sessionId: s.id,
+            state,
+            tool,
+            detail: detail ?? shortTitle(t.title),
+            timestamp: ts,
+            agentType: t.agentType,
+          });
+        }
+        send("snapshot", entries);
       }
 
       function poll() {
         if (closed) return;
         try {
-          const active = getActiveMainJSONL();
-          if (!active) { if (currentSessionId !== null) { currentSessionId = null; tracked.clear(); send("snapshot", []); } return; }
-          if (active.sessionId !== currentSessionId) { send("session_change", { sessionId: active.sessionId }); initSession(active.sessionId); return; }
+          const sessions = refreshSessions();
           const now = Date.now();
-          const mainT = tracked.get("main");
-          if (mainT) {
-            try {
-              const stat = fs.statSync(mainT.path);
-              if (stat.size > mainT.size) { for (const l of readNewLines(mainT.path, mainT.size, stat.size, false)) emitUpdate(l, "main", "main"); mainT.lastGrew = now; mainT.size = stat.size; }
-            } catch { /* skip */ }
+          // DB hiccup (empty read): hold last-known state, evict nothing
+          if (sessions.length === 0) return;
+          const liveIds = new Set(sessions.map((s) => s.id));
+          // Grace: evict only after 5 consecutive misses so recency flips
+          // don't make seated agents run off and back on in loops
+          for (const [id, t] of tracked) {
+            if (!liveIds.has(id)) {
+              t.misses += 1;
+              if (t.misses >= 5) {
+                send("agent_end", { agentId: t.agentId });
+                tracked.delete(id);
+                if (id === mainSessionId) mainSessionId = null;
+              }
+            }
           }
-          for (const { file, agentId } of getSubagentFiles(currentSessionId!)) {
-            if (!tracked.has(agentId)) {
-              try {
-                const agentType = readAgentType(file);
-                tracked.set(agentId, { path: file, agentId, size: fs.statSync(file).size, lastGrew: now });
-                const last = readRecentLines(file, 1, true).slice(-1)[0];
-                if (last) emitUpdate(last, agentId, "sub", agentType);
-              } catch { /* skip */ }
+          for (const s of sessions) {
+            tracked.get(s.id)!.misses = 0;
+            if (now - s.time_updated > 15 * 60_000) continue;
+            const t = tracked.get(s.id)!;
+            const part = getLatestPart(s.id);
+            if (part && part.id !== t.lastPartId) {
+              t.lastPartId = part.id;
+              t.lastSeen = now;
+              t.idleSent = false;
+              const parsed = parsePart(part);
+              if (parsed) emitUpdate(t, parsed);
               continue;
             }
-            const tf = tracked.get(agentId)!;
-            try {
-              const stat = fs.statSync(tf.path);
-              if (stat.size > tf.size) { for (const l of readNewLines(tf.path, tf.size, stat.size, true)) emitUpdate(l, agentId, "sub", readAgentType(tf.path)); tf.lastGrew = now; tf.size = stat.size; }
-            } catch { /* skip */ }
+            // Idle agents stay seated indefinitely: they only leave (fade out)
+            // when their session drops out of the recent list (misses above).
+            if (part) {
+              const age = now - part.time_created;
+              if (age > IDLE_MS && !t.idleSent) {
+                // Settle into idle once after activity ends
+                emitUpdate(t, { state: "idle", timestamp: msToIso(part.time_created) });
+                t.idleSent = true;
+              }
+            }
           }
-          for (const [agentId, tf] of tracked) {
-            if (agentId !== "main" && now - tf.lastGrew > STALE_MS) { send("agent_end", { agentId }); tracked.delete(agentId); }
-          }
-        } catch { /* outer guard */ }
+        } catch {
+          /* outer guard */
+        }
       }
 
       function heartbeat() {
-        if (!closed) { try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { closed = true; } }
+        if (!closed) {
+          try {
+            controller.enqueue(encoder.encode(": ping\n\n"));
+          } catch {
+            closed = true;
+          }
+        }
       }
 
-      const active = getActiveMainJSONL();
-      if (active) initSession(active.sessionId); else send("snapshot", []);
+      snapshot();
       const intervalId = setInterval(poll, POLL_MS);
       const heartbeatId = setInterval(heartbeat, 15_000);
-      (controller as unknown as { _cleanup: () => void })._cleanup = () => { closed = true; clearInterval(intervalId); clearInterval(heartbeatId); };
+      (controller as unknown as { _cleanup: () => void })._cleanup = () => {
+        closed = true;
+        clearInterval(intervalId);
+        clearInterval(heartbeatId);
+      };
     },
     cancel(controller) {
       const c = controller as unknown as { _cleanup?: () => void };
@@ -250,6 +380,11 @@ export async function GET() {
   });
 
   return new NextResponse(stream, {
-    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" },
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
   });
 }
