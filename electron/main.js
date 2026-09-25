@@ -90,6 +90,7 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
       title: "Pixel Office - Starting...",
+    icon: path.join(__dirname, "..", "public", "pixel-office.ico"),
     show: false,
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   });

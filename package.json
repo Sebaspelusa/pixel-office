@@ -9,7 +9,7 @@
     "dev": "next dev",
     "dev:electron": "npm run build:next && electron .",
     "build:next": "next build",
-    "build:exe": "npm run build:next && electron-builder --win",
+    "build:exe": "npm run build:next && node scripts/prune-standalone.js && electron-builder --win",
     "start": "next start",
     "electron": "electron ."
   },
@@ -60,6 +60,7 @@
       }
     ],
     "win": {
+      "icon": "public/pixel-office.ico",
       "target": [
         {
           "target": "nsis",
