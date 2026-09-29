@@ -18,7 +18,7 @@ A live pixel-art visualization of your **OpenCode** AI agents, as a desktop app.
 - **6 office themes** (AI-generated): Retro Cubicles, Retro Office, Cozy Café, Corporate, Startup, Original Desk — each with its own seats, scale and floor calibration
 - **Cast panel** (👥): toggle ambient characters per spot, pick their look (P0–P9), wander mode, workers-only mode
 - **CAL mode** (📐): drag seats and characters onto furniture, tune zoom/size live, restore defaults
-- Day/night clock overlay, event log, token usage counter, public broadcast toggle
+- Day/night clock overlay, event log, token usage counter
 - Optional multi-floor **building view** (🏢) with terrace, studio, servers, meeting room, lobby and café
 
 ## Requirements

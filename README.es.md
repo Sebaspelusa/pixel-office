@@ -18,7 +18,7 @@ Visualización en vivo de tus agentes de IA de **OpenCode** como app de escritor
 - **6 temas de oficina** (generados con IA): Retro Cubicles, Retro Office, Cozy Café, Corporate, Startup, Original Desk — cada uno con asientos, escala y suelo calibrados
 - **Panel de elenco** (👥): prende/apaga personajes ambiente por puesto, cambia su dibujo (P0–P9), modo deambular, modo solo-trabajadores
 - **Modo CAL** (📐): arrastra asientos y personajes a los muebles, ajusta zoom/tamaño en vivo, restaura valores
-- Reloj día/noche, registro de eventos, contador de tokens, toggle de broadcast público
+- Reloj día/noche, registro de eventos, contador de tokens
 - Vista opcional del **edificio** multi-planta (🏢): terraza, estudio, servidores, reuniones, lobby y café
 
 ## Requisitos

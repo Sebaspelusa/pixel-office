@@ -15,8 +15,6 @@ import { CastButton } from "./CastSelector";
 function PixelAgentsPage() {
   const { connected, activeSessionId, agents } = useAgentData();
   const { theme } = useTheme();
-  const [broadcastOn, setBroadcastOn] = useState(false);
-  const [toggling, setToggling] = useState(false);
   // Building (pisos de abajo) hidden by default; toggle persists. Applied
   // after mount so server and client render identically (no hydration mismatch).
   const [showBuilding, setShowBuilding] = useState(false);
@@ -29,28 +27,6 @@ function PixelAgentsPage() {
   useEffect(() => {
     try { localStorage.setItem("pixel-hq-show-building", showBuilding ? "1" : "0"); } catch {}
   }, [showBuilding]);
-
-  useEffect(() => {
-    fetch("/api/pixel-agents/broadcast")
-      .then((r) => r.json())
-      .then((cfg) => { setBroadcastOn(cfg.broadcast); })
-      .catch(() => {});
-  }, []);
-
-  async function postBroadcast(patch: { broadcast?: boolean }) {
-    setToggling(true);
-    try {
-      const res = await fetch("/api/pixel-agents/broadcast", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      const cfg = await res.json();
-      setBroadcastOn(cfg.broadcast);
-    } finally {
-      setToggling(false);
-    }
-  }
 
   const c = theme.colors;
 
@@ -97,20 +73,6 @@ function PixelAgentsPage() {
 
           {/* Cast selector */}
           <CastButton />
-
-          {/* Broadcast toggle */}
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none", marginLeft: "auto" }}
-            onClick={() => !toggling && postBroadcast({ broadcast: !broadcastOn })}>
-            <span style={{ fontSize: 11, color: c.textMuted }}>Public</span>
-            <div style={{ position: "relative", width: 28, height: 14, borderRadius: 7, background: broadcastOn ? c.statusLive : c.textMuted, transition: "background 0.2s" }}>
-              <span style={{ position: "absolute", top: 2, left: broadcastOn ? 14 : 2, width: 10, height: 10, borderRadius: "50%", background: "#fff", transition: "left 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.4)" }} />
-            </div>
-            {broadcastOn && (
-              <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 9999, border: `1px solid ${c.statusLive}33`, color: c.statusLive, background: `${c.statusLive}1a`, fontFamily: "monospace" }}>
-                ● LIVE
-              </span>
-            )}
-          </label>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
