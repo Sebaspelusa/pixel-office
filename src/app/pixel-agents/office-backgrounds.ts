@@ -200,6 +200,29 @@ export const officeBackgrounds: OfficeBackground[] = [
       { x: 0.65, y: 0.44, facing: -1, state: "idle", label: "pm", detail: "☕", icon: "" },
     ],
   },
+
+  // ─── MEETING ROOM (retro wood, blinds, laptops, rug) ───────────────────
+  {
+    id: "meeting-room",
+    name: "Meeting Room",
+    image: "/offices/meeting-room.jpg",
+    perspective: "frontal",
+    aspectRatio: AR,
+    zoom: 1.22,
+    floorY: 0.90,
+    spriteScale: 0.9,
+    seats: [
+      // Side chairs (face the table)
+      { x: 0.16, y: 0.83, facing: 1 },
+      { x: 0.70, y: 0.83, facing: -1 },
+      // Back row (behind the table)
+      { x: 0.29, y: 0.64, facing: 1 },
+      { x: 0.455, y: 0.64, facing: -1 },
+      // Front row (backs to camera)
+      { x: 0.365, y: 0.90, facing: 1 },
+      { x: 0.555, y: 0.90, facing: -1 },
+    ],
+  },
 ];
 
 export function getOfficeBackground(id: string): OfficeBackground {
