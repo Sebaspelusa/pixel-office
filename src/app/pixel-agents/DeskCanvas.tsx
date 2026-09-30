@@ -262,8 +262,8 @@ export function DeskCanvas() {
     // Tuners (zoom/size) persist per background, like drag overrides.
     // v2 keys: v1 keys are orphaned on purpose (old giant tunings die out).
     try {
-      const z = localStorage.getItem(`pixel-hq-zoom2-${background.id}`);
-      const s = localStorage.getItem(`pixel-hq-scale2-${background.id}`);
+      const z = localStorage.getItem(`pixel-hq-zoom3-${background.id}`);
+      const s = localStorage.getItem(`pixel-hq-scale3-${background.id}`);
       const zn = z !== null ? Number(z) : NaN;
       const sn = s !== null ? Number(s) : NaN;
       setCalZoom(!isNaN(zn) ? zn : null);
@@ -920,17 +920,17 @@ export function DeskCanvas() {
               border: "1px solid rgba(0,255,255,0.4)",
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <button onClick={() => { const n = +Math.max(0.3, (calScale ?? background.spriteScale) - 0.05).toFixed(2); setCalScale(n); try { localStorage.setItem(`pixel-hq-scale2-${background.id}`, String(n)); } catch {} }}
+                <button onClick={() => { const n = +Math.max(0.3, (calScale ?? background.spriteScale) - 0.05).toFixed(2); setCalScale(n); try { localStorage.setItem(`pixel-hq-scale3-${background.id}`, String(n)); } catch {} }}
                   style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>A−</button>
                 <span>size {effScale.toFixed(2)}</span>
-                <button onClick={() => { const n = +Math.min(1.2, (calScale ?? background.spriteScale) + 0.05).toFixed(2); setCalScale(n); try { localStorage.setItem(`pixel-hq-scale2-${background.id}`, String(n)); } catch {} }}
+                <button onClick={() => { const n = +Math.min(2.0, (calScale ?? background.spriteScale) + 0.05).toFixed(2); setCalScale(n); try { localStorage.setItem(`pixel-hq-scale3-${background.id}`, String(n)); } catch {} }}
                   style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>A+</button>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <button onClick={() => { const n = +(Math.max(1.0, (calZoom ?? background.zoom) - 0.02)).toFixed(2); setCalZoom(n); try { localStorage.setItem(`pixel-hq-zoom2-${background.id}`, String(n)); } catch {} }}
+                <button onClick={() => { const n = +(Math.max(1.0, (calZoom ?? background.zoom) - 0.02)).toFixed(2); setCalZoom(n); try { localStorage.setItem(`pixel-hq-zoom3-${background.id}`, String(n)); } catch {} }}
                   style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>Z−</button>
                 <span>zoom {zoom.toFixed(2)}</span>
-                <button onClick={() => { const n = +(Math.min(1.6, (calZoom ?? background.zoom) + 0.02)).toFixed(2); setCalZoom(n); try { localStorage.setItem(`pixel-hq-zoom2-${background.id}`, String(n)); } catch {} }}
+                <button onClick={() => { const n = +(Math.min(1.6, (calZoom ?? background.zoom) + 0.02)).toFixed(2); setCalZoom(n); try { localStorage.setItem(`pixel-hq-zoom3-${background.id}`, String(n)); } catch {} }}
                   style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>Z+</button>
               </div>
               <button onClick={() => {
@@ -941,6 +941,8 @@ export function DeskCanvas() {
                   localStorage.removeItem(`pixel-hq-amb-${background.id}`);
                   localStorage.removeItem(`pixel-hq-zoom-${background.id}`);
                   localStorage.removeItem(`pixel-hq-scale-${background.id}`);
+                  localStorage.removeItem(`pixel-hq-zoom3-${background.id}`);
+                  localStorage.removeItem(`pixel-hq-scale3-${background.id}`);
                   localStorage.removeItem(`pixel-hq-zoom2-${background.id}`);
                   localStorage.removeItem(`pixel-hq-scale2-${background.id}`);
                 } catch {}

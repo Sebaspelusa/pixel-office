@@ -210,7 +210,7 @@ export const officeBackgrounds: OfficeBackground[] = [
     aspectRatio: AR,
     zoom: 1.22,
     floorY: 0.90,
-    spriteScale: 0.95,
+    spriteScale: 1.4,
     seats: [
       // User-placed via CAL drag (v2 JSON)
       { x: 0.237, y: 0.66, facing: 1 },
