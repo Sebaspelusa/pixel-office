@@ -210,17 +210,15 @@ export const officeBackgrounds: OfficeBackground[] = [
     aspectRatio: AR,
     zoom: 1.22,
     floorY: 0.90,
-    spriteScale: 0.9,
+    spriteScale: 0.95,
     seats: [
-      // Side chairs (face the table)
-      { x: 0.16, y: 0.83, facing: 1 },
-      { x: 0.70, y: 0.83, facing: -1 },
-      // Back row (behind the table)
-      { x: 0.29, y: 0.64, facing: 1 },
-      { x: 0.455, y: 0.64, facing: -1 },
-      // Front row (backs to camera)
-      { x: 0.365, y: 0.90, facing: 1 },
-      { x: 0.555, y: 0.90, facing: -1 },
+      // User-placed via CAL drag (their exact JSON)
+      { x: 0.236, y: 0.612, facing: 1 },
+      { x: 0.749, y: 0.564, facing: -1 },
+      { x: 0.411, y: 0.523, facing: 1 },
+      { x: 0.46, y: 0.64, facing: -1 },
+      { x: 0.565, y: 0.534, facing: 1 },
+      { x: 0.428, y: 0.685, facing: -1 },
     ],
   },
 ];
