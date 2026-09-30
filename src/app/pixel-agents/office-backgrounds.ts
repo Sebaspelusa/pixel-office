@@ -97,7 +97,8 @@ export const officeBackgrounds: OfficeBackground[] = [
     zoom: 1.30,
     // Walk line on-screen (was mapping below the panel)
     floorY: 0.79,
-    spriteScale: 0.9,
+    // Big close-up chairs need big sprites (torso ≈ chair height)
+    spriteScale: 1.25,
     seats: [
       // 4 front cubicles (chair wheel bases)
       { x: 0.425, y: 0.78, facing: -1 },
@@ -152,7 +153,8 @@ export const officeBackgrounds: OfficeBackground[] = [
     image: "/offices/corporate-exec.jpg",
     perspective: "isometric",
     aspectRatio: AR,
-    zoom: 1.55,
+    // Zoom hides the wide gray side margins (checker reaches ~17.5%)
+    zoom: 1.7,
     // Walk line on-screen (0.88 mapped to 109%, invisible before)
     floorY: 0.75,
     spriteScale: 0.9,
