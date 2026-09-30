@@ -212,13 +212,13 @@ export const officeBackgrounds: OfficeBackground[] = [
     floorY: 0.90,
     spriteScale: 0.95,
     seats: [
-      // User-placed via CAL drag (their exact JSON)
-      { x: 0.236, y: 0.612, facing: 1 },
-      { x: 0.749, y: 0.564, facing: -1 },
-      { x: 0.411, y: 0.523, facing: 1 },
-      { x: 0.46, y: 0.64, facing: -1 },
-      { x: 0.565, y: 0.534, facing: 1 },
-      { x: 0.428, y: 0.685, facing: -1 },
+      // User-placed via CAL drag (v2 JSON)
+      { x: 0.237, y: 0.66, facing: 1 },
+      { x: 0.743, y: 0.672, facing: -1 },
+      { x: 0.405, y: 0.551, facing: 1 },
+      { x: 0.565, y: 0.548, facing: -1 },
+      { x: 0.608, y: 0.74, facing: 1 },
+      { x: 0.411, y: 0.729, facing: -1 },
     ],
   },
 ];
