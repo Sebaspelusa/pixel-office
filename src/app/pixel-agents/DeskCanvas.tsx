@@ -213,6 +213,41 @@ function SpeechBubble({ state, tool, detail, x, y, fw, sc, opacity, icon }: {
   );
 }
 
+// ─── CAL panel labels (ES/EN) ──────────────────────────────────────────────
+// Calibration is the one panel you drive blind, so it speaks your language.
+const T = {
+  es: {
+    size: "tamaño", zoom: "zoom", seats: "sillas", people: "gente",
+    addSeat: "+ silla", delSeat: "− silla", addPeople: "+ gente", delPeople: "− gente",
+    addSeatTip: "Agrega una silla y arrástrala a un mueble vacío",
+    delSeatTip: "Quita la última silla agregada",
+    addPeopleTip: "Agrega gente decorativa (aparece sin agentes) y arrástrala",
+    delPeopleTip: "Quita la última persona decorativa",
+    reset: "↺ Restablecer tema",
+    resetTip: "Volver a los valores del archivo (los agentes caminan de vuelta)",
+    resetAsk: "¿Restablecer este tema? Se borran las sillas, la gente y el zoom que moviste.",
+    exportTip: "Copia este texto y lo guardo permanente en el archivo",
+    seatTip: "Arrastra la silla #",
+    ambTip: "Arrastra este personaje a su sitio (se guarda solo)",
+    click: "clic",
+  },
+  en: {
+    size: "size", zoom: "zoom", seats: "seats", people: "people",
+    addSeat: "+ seat", delSeat: "− seat", addPeople: "+ people", delPeople: "− people",
+    addSeatTip: "Add a seat, then drag it onto an empty desk",
+    delSeatTip: "Remove the last added seat",
+    addPeopleTip: "Add decorative people (they show with no agents) and drag them",
+    delPeopleTip: "Remove the last decorative person",
+    reset: "↺ Reset theme",
+    resetTip: "Back to the values in the file (agents walk over again)",
+    resetAsk: "Reset this theme? Every seat, person and zoom you moved will be cleared.",
+    exportTip: "Copy this text and I will save it permanently in the file",
+    seatTip: "Drag seat #",
+    ambTip: "Drag this character into place (saved automatically)",
+    click: "click",
+  },
+} as const;
+
 // ─── DeskCanvas ───────────────────────────────────────────────────────────────
 
 export function DeskCanvas() {
@@ -244,6 +279,17 @@ export function DeskCanvas() {
       setCalMode(true);
     }
   }, []);
+  // Panel language (ES default, EN toggle) — persisted across restarts
+  const [lang, setLang] = useState<"es" | "en">("es");
+  useEffect(() => {
+    try { const l = localStorage.getItem("pixel-lang"); if (l === "en" || l === "es") setLang(l); } catch {}
+  }, []);
+  const t = T[lang];
+  const toggleLang = () => {
+    const n = lang === "es" ? "en" : "es";
+    setLang(n);
+    try { localStorage.setItem("pixel-lang", n); } catch {}
+  };
   // Click-to-measure: in cal mode, clicking the scene shows the IMAGE-fraction
   // coords of the click (inverse of imgToC) so chair bases can be read exactly.
   const [calClick, setCalClick] = useState<{ imgX: number; imgY: number } | null>(null);
@@ -873,7 +919,7 @@ export function DeskCanvas() {
                   const def = ambientDefs[k];
                   if (def) setDrag({ kind: "amb", index: k, imgX: def.x, imgY: def.y });
                 } : undefined}
-                title={amb ? "Arrastra este personaje a su sitio (se guarda solo)" : undefined}
+                title={amb ? t.ambTip : undefined}
                 style={{
                 position: "absolute",
                 left: renderX,
@@ -977,38 +1023,39 @@ export function DeskCanvas() {
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <button onClick={() => { const n = +Math.max(0.3, (calScale ?? background.spriteScale) - 0.05).toFixed(2); setCalScale(n); try { localStorage.setItem(`pixel-hq-scale4-${background.id}`, String(n)); } catch {} }}
                   style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>A−</button>
-                <span>size {effScale.toFixed(2)}</span>
+                <span>{t.size} {effScale.toFixed(2)}</span>
                 <button onClick={() => { const n = +Math.min(2.0, (calScale ?? background.spriteScale) + 0.05).toFixed(2); setCalScale(n); try { localStorage.setItem(`pixel-hq-scale4-${background.id}`, String(n)); } catch {} }}
                   style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>A+</button>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <button onClick={() => { const n = +(Math.max(1.0, (calZoom ?? background.zoom) - 0.02)).toFixed(2); setCalZoom(n); try { localStorage.setItem(`pixel-hq-zoom4-${background.id}`, String(n)); } catch {} }}
                   style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>Z−</button>
-                <span>zoom {zoom.toFixed(2)}</span>
+                <span>{t.zoom} {zoom.toFixed(2)}</span>
                 <button onClick={() => { const n = +(Math.min(1.6, (calZoom ?? background.zoom) + 0.02)).toFixed(2); setCalZoom(n); try { localStorage.setItem(`pixel-hq-zoom4-${background.id}`, String(n)); } catch {} }}
                   style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>Z+</button>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <button onClick={() => saveExtra([...extraSeats, { x: 0.5, y: 0.5, facing: -1 }])}
-                  title="Agrega una silla y arrástrala a un mueble vacío"
-                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>+ silla</button>
-                <span>extra {extraSeats.length}</span>
+                  title={t.addSeatTip}
+                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>{t.addSeat}</button>
+                <span>{t.seats} {extraSeats.length}</span>
                 <button onClick={() => saveExtra(extraSeats.slice(0, -1))}
                   disabled={extraSeats.length === 0}
-                  title="Quita la última silla agregada"
-                  style={{ cursor: extraSeats.length ? "pointer" : "not-allowed", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: extraSeats.length ? "#00ffff" : "rgba(0,255,255,0.3)", fontSize: 14, padding: "0 8px" }}>− silla</button>
+                  title={t.delSeatTip}
+                  style={{ cursor: extraSeats.length ? "pointer" : "not-allowed", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: extraSeats.length ? "#00ffff" : "rgba(0,255,255,0.3)", fontSize: 14, padding: "0 8px" }}>{t.delSeat}</button>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <button onClick={() => saveExtraAmb([...extraAmb, { x: 0.5, y: 0.5, facing: -1, state: "idle", label: "dev", charN: 3 + (extraAmb.length % 3) }])}
-                  title="Agrega gente decorativa (aparece sin agentes) y arrástrala"
-                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>+ gente</button>
-                <span>gente {extraAmb.length}</span>
+                  title={t.addPeopleTip}
+                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>{t.addPeople}</button>
+                <span>{t.people} {extraAmb.length}</span>
                 <button onClick={() => saveExtraAmb(extraAmb.slice(0, -1))}
                   disabled={extraAmb.length === 0}
-                  title="Quita la última persona decorativa"
-                  style={{ cursor: extraAmb.length ? "pointer" : "not-allowed", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: extraAmb.length ? "#00ffff" : "rgba(0,255,255,0.3)", fontSize: 14, padding: "0 8px" }}>− gente</button>
+                  title={t.delPeopleTip}
+                  style={{ cursor: extraAmb.length ? "pointer" : "not-allowed", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: extraAmb.length ? "#00ffff" : "rgba(0,255,255,0.3)", fontSize: 14, padding: "0 8px" }}>{t.delPeople}</button>
               </div>
               <button onClick={() => {
+                if (!confirm(t.resetAsk)) return;
                 setCalScale(null); setCalZoom(null); setCalClick(null);
                 setSeatOverrides({}); setAmbOverrides({}); setDrag(null); saveExtra([]); saveExtraAmb([]);
                 try {
@@ -1026,10 +1073,15 @@ export function DeskCanvas() {
                   localStorage.removeItem(`pixel-hq-scale2-${background.id}`);
                 } catch {}
               }}
-                title="Volver a los valores del archivo (los agentes caminan de vuelta)"
-                style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "2px 8px" }}>↺ Restaurar</button>
+                title={t.resetTip}
+                style={{ cursor: "pointer", background: "rgba(255,0,0,0.15)", border: "1px solid #ff5555", borderRadius: 3, color: "#ff7777", fontSize: 14, fontWeight: "bold", padding: "3px 8px", width: "100%" }}>{t.reset}</button>
+              <button onClick={toggleLang}
+                title={lang === "es" ? "Switch to English" : "Cambiar a español"}
+                style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 12, padding: "1px 8px", width: "100%" }}>
+                {lang === "es" ? "ES · English" : "EN · Español"}
+              </button>
               {(Object.keys(seatOverrides).length > 0 || Object.keys(ambOverrides).length > 0 || extraSeats.length > 0 || extraAmb.length > 0 || calZoom !== null || calScale !== null) && (
-                <pre title="Mándame este texto y grabo las posiciones en el archivo"
+                <pre title={t.exportTip}
                   style={{ margin: 0, fontSize: 10, color: "#7dffce", whiteSpace: "pre-wrap", maxWidth: 230 }}>
                   {JSON.stringify({ bg: background.id, zoom: +zoom.toFixed(2), size: +effScale.toFixed(2), seats: seatOverrides, amb: ambOverrides, extra: extraSeats, extraAmb })}
                 </pre>
@@ -1055,7 +1107,7 @@ export function DeskCanvas() {
                     e.preventDefault();
                     setDrag({ kind: "seat", index: i, imgX: seat.x, imgY: seat.y });
                   }}
-                  title={`Arrastra el asiento #${i} hasta su silla (se guarda solo)`}
+                  title={`${t.seatTip}${i}`}
                   style={{
                     position: "absolute",
                     left: cx,
@@ -1111,7 +1163,7 @@ export function DeskCanvas() {
                   borderRadius: 4,
                   border: "1px solid rgba(0,255,255,0.4)",
                 }}>
-                  click → x={calClick.imgX.toFixed(3)} y={calClick.imgY.toFixed(3)}
+                  {t.click} → x={calClick.imgX.toFixed(3)} y={calClick.imgY.toFixed(3)}
                 </div>
               </>
             )}
