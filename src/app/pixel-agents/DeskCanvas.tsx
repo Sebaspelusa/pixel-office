@@ -270,10 +270,16 @@ export function DeskCanvas() {
       setCalScale(!isNaN(sn) ? sn : null);
     } catch { setCalZoom(null); setCalScale(null); }
     try {
-      const s = localStorage.getItem(`pixel-hq-seats-${background.id}`);
-      const a = localStorage.getItem(`pixel-hq-amb-${background.id}`);
+      const s = localStorage.getItem(`pixel-hq-seats2-${background.id}`);
+      const a = localStorage.getItem(`pixel-hq-amb2-${background.id}`);
       setSeatOverrides(s ? JSON.parse(s) as Record<number, { x: number; y: number }> : {});
       setAmbOverrides(a ? JSON.parse(a) as Record<number, { x: number; y: number }> : {});
+      // v1 seat/ambient keys are orphaned on purpose and deleted here: stale
+      // drag positions from earlier broken calibrations used to shadow the
+      // filed values in office-backgrounds.ts ("fix one, break others").
+      // Every hand-placed spot is already filed there.
+      localStorage.removeItem(`pixel-hq-seats-${background.id}`);
+      localStorage.removeItem(`pixel-hq-amb-${background.id}`);
     } catch { setSeatOverrides({}); setAmbOverrides({}); }
   }, [background.id]);
   // Ambient life: advance decorative sitters' frames a few times per second
@@ -468,6 +474,24 @@ export function DeskCanvas() {
         motion.moving = true;
       }
     });
+
+    // Re-anchor seated agents to their effective seat (incl. CAL overrides):
+    // dragging a red dot and releasing must move the character onto the dot,
+    // not leave the old sprite position stale (previous bug).
+    motionRef.current.forEach((motion) => {
+      if (motion.walkingOut) return;
+      const seat = seats[motion.seatIndex] ?? seats[0];
+      const fwA = Math.round(16 * BASE_SC * es * (cw / REF_WIDTH));
+      const tx = imgToC(seat.x, ez, efy) * cw - fwA / 2;
+      if (Math.abs(tx - motion.targetX) > 1 || motion.ax !== seat.x || motion.ay !== seat.y) {
+        motion.ax = seat.x;
+        motion.ay = seat.y;
+        motion.seatFacing = seat.facing;
+        motion.targetX = tx;
+        motion.moving = true;
+        motion.walkTime = 0;
+      }
+    });
   }, [agents, background, calZoom, calScale, seatOverrides]);
 
   // ─── Render ─────────────────────────────────────────────────────────────
@@ -482,11 +506,11 @@ export function DeskCanvas() {
     const v = { x: +drag.imgX.toFixed(3), y: +drag.imgY.toFixed(3) };
     if (drag.kind === "seat") {
       const n = { ...seatOverrides, [drag.index]: v };
-      try { localStorage.setItem(`pixel-hq-seats-${background.id}`, JSON.stringify(n)); } catch {}
+      try { localStorage.setItem(`pixel-hq-seats2-${background.id}`, JSON.stringify(n)); } catch {}
       setSeatOverrides(n);
     } else {
       const n = { ...ambOverrides, [drag.index]: v };
-      try { localStorage.setItem(`pixel-hq-amb-${background.id}`, JSON.stringify(n)); } catch {}
+      try { localStorage.setItem(`pixel-hq-amb2-${background.id}`, JSON.stringify(n)); } catch {}
       setAmbOverrides(n);
     }
     setDrag(null);
@@ -685,8 +709,15 @@ export function DeskCanvas() {
           const charN = motion.charN;
           const anim = motion.moving ? WALK : ANIMS[entry.state];
           const css = spriteCSS(anim, motion.frameIdx, charN, sc);
-          const seatCx = imgToC(motion.ax, zoom, fcy) * cw;
-          const seatCy = imgToC(motion.ay, zoom, fcy) * ch;
+          // CAL drag preview: while dragging a seat dot, this agent's sprite
+          // follows the cursor live (same trick as ambient sprites) so it
+          // lands exactly on the dot, not higher/lower after releasing.
+          const dragAt = drag?.kind === "seat" && drag.index === motion.seatIndex && !motion.moving && !motion.walkingOut;
+          const anchorX = dragAt ? drag.imgX : motion.ax;
+          const anchorY = dragAt ? drag.imgY : motion.ay;
+          const renderX = dragAt ? imgToC(anchorX, zoom, fcy) * cw - fw / 2 : motion.x;
+          const seatCx = imgToC(anchorX, zoom, fcy) * cw;
+          const seatCy = imgToC(anchorY, zoom, fcy) * ch;
           const walkCy = imgToC(background.floorY ?? FLOOR_Y_FRACTION, zoom, fcy) * ch;
           const floorY = motion.moving ? walkCy - fh : seatCy - fh;
           // Seated: crop to torso (legs hidden behind desk); head line for labels
@@ -696,7 +727,7 @@ export function DeskCanvas() {
           const fade = motion.walkingOut ? motion.opacity : 1;
           const rgb = RGB[entry.state];
           // Monitor glow anchored above the sprite (screen sits on the desk)
-          const glowLeft = motion.moving ? seatCx - fw * 1.2 : motion.x + fw / 2 - fw * (SCREEN_W_MULT / 2);
+          const glowLeft = motion.moving ? seatCx - fw * 1.2 : renderX + fw / 2 - fw * (SCREEN_W_MULT / 2);
           const glowTop = floorY - fh * 0.85;
           return (
             <React.Fragment key={`agent-${agentId}`}>
@@ -821,7 +852,7 @@ export function DeskCanvas() {
                 title={amb ? "Arrastra este personaje a su sitio (se guarda solo)" : undefined}
                 style={{
                 position: "absolute",
-                left: motion.x,
+                left: renderX,
                 top: headY,
                 width: fw,
                 height: seated ? fh * (1 - SEAT_CROP_TOP) : fh,
@@ -845,7 +876,7 @@ export function DeskCanvas() {
                   state={entry.state}
                   tool={entry.tool}
                   detail={entry.detail}
-                  x={motion.x}
+                  x={renderX}
                   y={headY}
                   fw={fw}
                   sc={sc}
@@ -857,7 +888,7 @@ export function DeskCanvas() {
               {!motion.moving && (
                 <div style={{
                   position: "absolute",
-                  left: motion.x + fw / 2,
+                  left: renderX + fw / 2,
                   top: headY - Math.max(20, fw * 0.55),
                   transform: "translateX(-50%)",
                   display: "flex",
@@ -937,8 +968,8 @@ export function DeskCanvas() {
                 setCalScale(null); setCalZoom(null); setCalClick(null);
                 setSeatOverrides({}); setAmbOverrides({}); setDrag(null);
                 try {
-                  localStorage.removeItem(`pixel-hq-seats-${background.id}`);
-                  localStorage.removeItem(`pixel-hq-amb-${background.id}`);
+                  localStorage.removeItem(`pixel-hq-seats2-${background.id}`);
+                  localStorage.removeItem(`pixel-hq-amb2-${background.id}`);
                   localStorage.removeItem(`pixel-hq-zoom-${background.id}`);
                   localStorage.removeItem(`pixel-hq-scale-${background.id}`);
                   localStorage.removeItem(`pixel-hq-zoom4-${background.id}`);

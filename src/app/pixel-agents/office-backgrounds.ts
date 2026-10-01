@@ -203,7 +203,9 @@ export const officeBackgrounds: OfficeBackground[] = [
     perspective: "frontal",
     aspectRatio: AR,
     zoom: 1.22,
-    floorY: 0.90,
+    // Walk line on-screen: 0.90 mapped to 98.8% (feet cut by the panel edge).
+    // 0.86 → 93.9%, same proven value as retro-cubicles at this zoom.
+    floorY: 0.86,
     spriteScale: 1.4,
     seats: [
       // User-placed via CAL drag (v2 JSON)
