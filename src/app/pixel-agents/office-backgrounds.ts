@@ -144,23 +144,24 @@ export const officeBackgrounds: OfficeBackground[] = [
   },
 
   // ─── CORPORATE EXECUTIVE (isometric, executive desk, leather chairs) ──
+  // Source cropped at x=0.79 (gray factory margin removed): seats remapped
+  // x/0.79, zoom 1.34 keeps on-screen sizes pixel-identical to before.
   {
     id: "corporate-exec",
     name: "Corporate",
     image: "/offices/corporate-exec.jpg",
     perspective: "isometric",
-    aspectRatio: AR,
-    // Zoom hides the wide gray side margins (checker reaches ~17.5%)
-    zoom: 1.7,
+    aspectRatio: 2300 / 1440,
+    zoom: 1.34,
     // Walk line on-screen (0.88 mapped to 109%, invisible before)
     floorY: 0.75,
     spriteScale: 0.9,
     seats: [
       // Behind the executive desk (leather chair)
-      { x: 0.615, y: 0.52, facing: -1 },
+      { x: 0.778, y: 0.52, facing: -1 },
       // Guest chairs (nudged onto chair centers from annotated shot)
-      { x: 0.39, y: 0.74, facing: 1 },
-      { x: 0.50, y: 0.80, facing: -1 },
+      { x: 0.494, y: 0.74, facing: 1 },
+      { x: 0.633, y: 0.80, facing: -1 },
     ],
   },
 
