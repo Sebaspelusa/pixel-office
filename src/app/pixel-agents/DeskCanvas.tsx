@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useAgentData } from "./AgentDataContext";
 import { useTheme } from "./ThemeContext";
 import { useBackground } from "./BackgroundContext";
@@ -251,6 +251,11 @@ export function DeskCanvas() {
   // Overrides persist per background in localStorage; the tuner panel shows
   // the JSON to send back for permanent filing in office-backgrounds.ts.
   const [seatOverrides, setSeatOverrides] = useState<Record<number, { x: number; y: number }>>({});
+  // CAL "+" seats: extra seats beyond the ones filed in the background, for
+  // scenes with more chairs than seats (startup, café). Same drag + persist.
+  const [extraSeats, setExtraSeats] = useState<{ x: number; y: number; facing: 1 | -1 }[]>([]);
+  // Same for decorative sitters (people that show up without any agent).
+  const [extraAmb, setExtraAmb] = useState<{ x: number; y: number; facing: 1 | -1; state: MultiAgentState; label: string; charN: number; detail?: string; icon?: string }[]>([]);
   const [ambOverrides, setAmbOverrides] = useState<Record<number, { x: number; y: number }>>({});
   const [drag, setDrag] = useState<null | { kind: "seat" | "amb"; index: number; imgX: number; imgY: number }>(null);
   // Live sprite-scale override in cal mode (A−/A+ buttons); null = background value
@@ -272,24 +277,46 @@ export function DeskCanvas() {
     try {
       const s = localStorage.getItem(`pixel-hq-seats2-${background.id}`);
       const a = localStorage.getItem(`pixel-hq-amb2-${background.id}`);
+      const x = localStorage.getItem(`pixel-hq-extra-${background.id}`);
+      const xa = localStorage.getItem(`pixel-hq-extraamb-${background.id}`);
       setSeatOverrides(s ? JSON.parse(s) as Record<number, { x: number; y: number }> : {});
       setAmbOverrides(a ? JSON.parse(a) as Record<number, { x: number; y: number }> : {});
+      setExtraSeats(x ? JSON.parse(x) as { x: number; y: number; facing: 1 | -1 }[] : []);
+      setExtraAmb(xa ? JSON.parse(xa) as { x: number; y: number; facing: 1 | -1; state: MultiAgentState; label: string; charN: number; detail?: string; icon?: string }[] : []);
       // v1 seat/ambient keys are orphaned on purpose and deleted here: stale
       // drag positions from earlier broken calibrations used to shadow the
       // filed values in office-backgrounds.ts ("fix one, break others").
       // Every hand-placed spot is already filed there.
       localStorage.removeItem(`pixel-hq-seats-${background.id}`);
       localStorage.removeItem(`pixel-hq-amb-${background.id}`);
-    } catch { setSeatOverrides({}); setAmbOverrides({}); }
+    } catch { setSeatOverrides({}); setAmbOverrides({}); setExtraSeats([]); }
   }, [background.id]);
+
+  // Effective seats = file values + CAL drag overrides + CAL "+" seats.
+  const effSeats = useMemo(() => {
+    const base = background.seats.length > 0 ? background.seats : DEFAULT_SEATS;
+    return [
+      ...base.map((s, i) => ({ ...s, ...(seatOverrides[i] ?? {}) })),
+      ...extraSeats,
+    ];
+  }, [background, seatOverrides, extraSeats]);
+
+  const saveExtra = (list: { x: number; y: number; facing: 1 | -1 }[]) => {
+    setExtraSeats(list);
+    try { localStorage.setItem(`pixel-hq-extra-${background.id}`, JSON.stringify(list)); } catch {}
+  };
+  const saveExtraAmb = (list: { x: number; y: number; facing: 1 | -1; state: MultiAgentState; label: string; charN: number; detail?: string; icon?: string }[]) => {
+    setExtraAmb(list);
+    try { localStorage.setItem(`pixel-hq-extraamb-${background.id}`, JSON.stringify(list)); } catch {}
+  };
   // Ambient life: advance decorative sitters' frames a few times per second
   // (only while the current background defines ambient spots)
   const [ambientTick, setAmbientTick] = useState(0);
   useEffect(() => {
-    if (!(background.ambient?.length)) return;
+    if (!(background.ambient?.length || extraAmb.length)) return;
     const id = setInterval(() => setAmbientTick((t) => t + 1), 600);
     return () => clearInterval(id);
-  }, [background]);
+  }, [background, extraAmb.length]);
 
   // ─── ResizeObserver ─────────────────────────────────────────────────────
 
@@ -305,7 +332,7 @@ export function DeskCanvas() {
       containerWidthRef.current = newCw;
       setContainerWidth(newCw);
       const newFw = Math.round(16 * BASE_SC * es * (newCw / REF_WIDTH));
-      const seats = (background.seats.length > 0 ? background.seats : DEFAULT_SEATS).map((s, i) => ({ ...s, ...(seatOverrides[i] ?? {}) }));
+      const seats = effSeats;
       motionRef.current.forEach((motion) => {
         motion.x *= ratio;
         if (!motion.walkingOut) {
@@ -319,7 +346,7 @@ export function DeskCanvas() {
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
-  }, [background, calZoom, calScale, seatOverrides]);
+  }, [background, calZoom, calScale, effSeats]);
 
   // ─── Shared RAF loop ────────────────────────────────────────────────────
 
@@ -394,7 +421,7 @@ export function DeskCanvas() {
 
   useEffect(() => {
     const cw = containerWidthRef.current;
-    const seats = (background.seats.length > 0 ? background.seats : DEFAULT_SEATS).map((s, i) => ({ ...s, ...(seatOverrides[i] ?? {}) }));
+    const seats = effSeats;
     const ez = calZoom ?? background.zoom;
     const es = calScale ?? background.spriteScale;
     const efy = background.focusY ?? 0.5;
@@ -492,15 +519,12 @@ export function DeskCanvas() {
         motion.walkTime = 0;
       }
     });
-  }, [agents, background, calZoom, calScale, seatOverrides]);
+  }, [agents, background, calZoom, calScale, effSeats]);
 
   // ─── Render ─────────────────────────────────────────────────────────────
 
   void renderTick;
 
-  const seats = background.seats.length > 0 ? background.seats : DEFAULT_SEATS;
-  // Effective seats = file values + CAL drag overrides (persisted per bg)
-  const effSeats = seats.map((s, i) => ({ ...s, ...(seatOverrides[i] ?? {}) }));
   const commitDrag = () => {
     if (!drag) return;
     const v = { x: +drag.imgX.toFixed(3), y: +drag.imgY.toFixed(3) };
@@ -530,7 +554,7 @@ export function DeskCanvas() {
   const DEMO_MODE = demoMode;
   const demoStates: MultiAgentState[] = ["editing", "searching", "reading", "running", "thinking", "waiting", "idle", "spawning", "editing", "searching"];
   const demoEntries: [string, AgentEntry][] = DEMO_MODE
-    ? seats.map((_, i) => [`demo-${i}`, {
+    ? effSeats.map((_, i) => [`demo-${i}`, {
         agentId: i === 0 ? "main" : `demo-${i}`,
         state: demoStates[i],
         role: (i === 0 ? "main" : "sub") as AgentRole,
@@ -545,7 +569,7 @@ export function DeskCanvas() {
   // Per-theme decorative sitters (bar, reading corner...). Static, seated,
   // never take agent seats and never walk: pure ambiance, zero tokens.
   // The cast panel can hide any of them (or all, with workers-only mode).
-  const ambientDefs = (background.ambient ?? []).map((a, k) => ({ ...a, ...(ambOverrides[k] ?? {}) }));
+  const ambientDefs = [...(background.ambient ?? []), ...extraAmb].map((a, k) => ({ ...a, ...(ambOverrides[k] ?? {}) }));
   const ambientPairs = ambientDefs
     .map((a, k) => ({ a, k }))
     .filter(({ k }) => !workersOnly && !deskHidden.includes(`${background.id}:${k}`));
@@ -964,12 +988,34 @@ export function DeskCanvas() {
                 <button onClick={() => { const n = +(Math.min(1.6, (calZoom ?? background.zoom) + 0.02)).toFixed(2); setCalZoom(n); try { localStorage.setItem(`pixel-hq-zoom4-${background.id}`, String(n)); } catch {} }}
                   style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>Z+</button>
               </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button onClick={() => saveExtra([...extraSeats, { x: 0.5, y: 0.5, facing: -1 }])}
+                  title="Agrega una silla y arrástrala a un mueble vacío"
+                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>+ silla</button>
+                <span>extra {extraSeats.length}</span>
+                <button onClick={() => saveExtra(extraSeats.slice(0, -1))}
+                  disabled={extraSeats.length === 0}
+                  title="Quita la última silla agregada"
+                  style={{ cursor: extraSeats.length ? "pointer" : "not-allowed", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: extraSeats.length ? "#00ffff" : "rgba(0,255,255,0.3)", fontSize: 14, padding: "0 8px" }}>− silla</button>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button onClick={() => saveExtraAmb([...extraAmb, { x: 0.5, y: 0.5, facing: -1, state: "idle", label: "dev", charN: 3 + (extraAmb.length % 3) }])}
+                  title="Agrega gente decorativa (aparece sin agentes) y arrástrala"
+                  style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "0 8px" }}>+ gente</button>
+                <span>gente {extraAmb.length}</span>
+                <button onClick={() => saveExtraAmb(extraAmb.slice(0, -1))}
+                  disabled={extraAmb.length === 0}
+                  title="Quita la última persona decorativa"
+                  style={{ cursor: extraAmb.length ? "pointer" : "not-allowed", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: extraAmb.length ? "#00ffff" : "rgba(0,255,255,0.3)", fontSize: 14, padding: "0 8px" }}>− gente</button>
+              </div>
               <button onClick={() => {
                 setCalScale(null); setCalZoom(null); setCalClick(null);
-                setSeatOverrides({}); setAmbOverrides({}); setDrag(null);
+                setSeatOverrides({}); setAmbOverrides({}); setDrag(null); saveExtra([]); saveExtraAmb([]);
                 try {
                   localStorage.removeItem(`pixel-hq-seats2-${background.id}`);
                   localStorage.removeItem(`pixel-hq-amb2-${background.id}`);
+                  localStorage.removeItem(`pixel-hq-extra-${background.id}`);
+                  localStorage.removeItem(`pixel-hq-extraamb-${background.id}`);
                   localStorage.removeItem(`pixel-hq-zoom-${background.id}`);
                   localStorage.removeItem(`pixel-hq-scale-${background.id}`);
                   localStorage.removeItem(`pixel-hq-zoom4-${background.id}`);
@@ -982,10 +1028,10 @@ export function DeskCanvas() {
               }}
                 title="Volver a los valores del archivo (los agentes caminan de vuelta)"
                 style={{ cursor: "pointer", background: "none", border: "1px solid #00ffff", borderRadius: 3, color: "#00ffff", fontSize: 14, padding: "2px 8px" }}>↺ Restaurar</button>
-              {(Object.keys(seatOverrides).length > 0 || Object.keys(ambOverrides).length > 0 || calZoom !== null || calScale !== null) && (
+              {(Object.keys(seatOverrides).length > 0 || Object.keys(ambOverrides).length > 0 || extraSeats.length > 0 || extraAmb.length > 0 || calZoom !== null || calScale !== null) && (
                 <pre title="Mándame este texto y grabo las posiciones en el archivo"
                   style={{ margin: 0, fontSize: 10, color: "#7dffce", whiteSpace: "pre-wrap", maxWidth: 230 }}>
-                  {JSON.stringify({ bg: background.id, zoom: +zoom.toFixed(2), size: +effScale.toFixed(2), seats: seatOverrides, amb: ambOverrides })}
+                  {JSON.stringify({ bg: background.id, zoom: +zoom.toFixed(2), size: +effScale.toFixed(2), seats: seatOverrides, amb: ambOverrides, extra: extraSeats, extraAmb })}
                 </pre>
               )}
             </div>
