@@ -136,13 +136,10 @@ export const officeBackgrounds: OfficeBackground[] = [
       { x: 0.70, y: 0.88, facing: 1 },
     ],
     ambient: [
-      // Reading corner crew (user-placed via CAL drag)
+      // Reading corner trio (user-placed via CAL drag) — keep only these three
       { x: 0.864, y: 0.641, facing: 1, state: "idle", label: "regular", detail: "☕ espresso", icon: "" },
       { x: 0.78, y: 0.57, facing: -1, state: "idle", label: "regular", detail: "☕ latte", icon: "" },
       { x: 0.62, y: 0.744, facing: 1, state: "reading", label: "reader", detail: "mystery novel", icon: "📖" },
-      // More crowd: guest at the window table + browser at the shelves
-      { x: 0.13, y: 0.62, facing: 1, state: "idle", label: "guest" },
-      { x: 0.72, y: 0.70, facing: 1, state: "idle", label: "browser" },
     ],
   },
 
@@ -190,16 +187,10 @@ export const officeBackgrounds: OfficeBackground[] = [
       { x: 0.395, y: 0.80, facing: 1 },
     ],
     ambient: [
-      // Lounge: sunk into the beanbags (user-placed via CAL drag)
+      // Lounge trio (user-placed via CAL drag) — keep only these three
       { x: 0.786, y: 0.582, facing: 1, state: "idle", label: "dev", detail: "deploy hoy?", icon: "💬" },
       { x: 0.894, y: 0.67, facing: -1, state: "idle", label: "dev" },
       { x: 0.884, y: 0.541, facing: -1, state: "idle", label: "founder", detail: "☕", icon: "" },
-      // Extra lounge crowd (drag into place with CAL, toggleable in cast panel)
-      { x: 0.745, y: 0.60, facing: 1, state: "idle", label: "intern" },
-      { x: 0.80, y: 0.72, facing: -1, state: "idle", label: "cto", detail: "ship it", icon: "" },
-      // More crowd: trainee on the rug + pm grabbing coffee top-right
-      { x: 0.70, y: 0.72, facing: 1, state: "idle", label: "trainee" },
-      { x: 0.65, y: 0.44, facing: -1, state: "idle", label: "pm", detail: "☕", icon: "" },
     ],
   },
 
