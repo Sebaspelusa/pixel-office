@@ -2,10 +2,30 @@ const { app, BrowserWindow, Tray, Menu, nativeImage } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const http = require("http");
+const net = require("net");
 const fs = require("fs");
 
-const PORT = 3000;
-const URL = `http://localhost:${PORT}/pixel-agents`;
+// Uncommon ports first: 3000 is Next.js' default and gets taken by any other
+// dev server running on the machine. First free candidate wins; 3000 stays last
+// so old habits keep working when nothing else is in the way.
+const PORT_CANDIDATES = [3014, 3015, 3016, 3017, 3018, 3000];
+let PORT = PORT_CANDIDATES[0];
+const pageUrl = () => `http://127.0.0.1:${PORT}/pixel-agents`;
+
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.once("listening", () => srv.close(() => resolve(true)));
+    srv.listen(port, "127.0.0.1");
+  });
+}
+
+async function pickPort() {
+  for (const p of PORT_CANDIDATES) if (await isPortFree(p)) return p;
+  return PORT_CANDIDATES[PORT_CANDIDATES.length - 1]; // all busy: last resort
+}
+
 let mainWindow = null;
 let tray = null;
 let serverProcess = null;
@@ -71,15 +91,28 @@ function waitForServer(timeoutMs = 60000) {
   });
 }
 
+// The error page above is only shown after waitForServer() gives up (port busy,
+// slow start). Keep polling: when the server finally answers, swap to the real
+// page instead of leaving the user staring at "Server failed to start".
+function recoverWhenReady(intervalMs = 3000) {
+  const timer = setInterval(async () => {
+    if (isQuitting) { clearInterval(timer); return; }
+    if (await waitForServer(2000)) {
+      clearInterval(timer);
+      if (mainWindow && !isQuitting) mainWindow.loadURL(pageUrl());
+    }
+  }, intervalMs);
+}
+
 const LOADING_HTML = "data:text/html," + encodeURIComponent(
   '<html><body style="background:#0a0a0f;color:#fbbf24;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:monospace">' +
   '<div style="text-align:center"><div style="font-size:48px">🏢</div><h1>Pixel Office</h1><p style="color:rgba(255,255,255,0.5)">Starting server...</p></div>' +
   "</body></html>"
 );
 
-const ERROR_HTML = "data:text/html," + encodeURIComponent(
+const errorHtml = () => "data:text/html," + encodeURIComponent(
   '<html><body style="background:#1a1a2e;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:monospace">' +
-  '<div style="text-align:center"><h1>Pixel Office</h1><p>Server failed to start. Check if port 3000 is free.</p></div>' +
+  '<div style="text-align:center"><h1>Pixel Office</h1><p>Server failed to start. Check if port ' + PORT + ' is free.</p></div>' +
   "</body></html>"
 );
 
@@ -100,8 +133,8 @@ function createWindow() {
   setTimeout(() => { if (mainWindow && !mainWindow.isVisible()) mainWindow.show(); }, 3000);
   // If a page fails to load, ready-to-show never fires — show error page instead
   mainWindow.webContents.on("did-fail-load", () => {
-    if (mainWindow && mainWindow.webContents.getURL() !== ERROR_HTML) {
-      mainWindow.loadURL(ERROR_HTML);
+    if (mainWindow && mainWindow.webContents.getURL() !== errorHtml()) {
+      mainWindow.loadURL(errorHtml());
       if (!mainWindow.isVisible()) mainWindow.show();
     }
   });
@@ -143,15 +176,17 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    PORT = await pickPort();
     startServer();
     createWindow();
     createTray();
 
     const ready = await waitForServer();
     if (mainWindow) {
-      mainWindow.setTitle("Pixel Office - Agent Visualizer");
-      mainWindow.loadURL(ready ? URL : ERROR_HTML);
+      mainWindow.setTitle(`Pixel Office - Agent Visualizer (${PORT})`);
+      mainWindow.loadURL(ready ? pageUrl() : errorHtml());
       if (!mainWindow.isVisible()) mainWindow.show();
+      if (!ready) recoverWhenReady();
     }
   });
 }
