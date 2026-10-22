@@ -250,7 +250,7 @@ const T = {
 
 // ─── DeskCanvas ───────────────────────────────────────────────────────────────
 
-export function DeskCanvas() {
+export function DeskCanvas({ clean = false }: { clean?: boolean } = {}) {
   const { agents } = useAgentData();
   const { theme } = useTheme();
   const { background } = useBackground();
@@ -659,8 +659,8 @@ export function DeskCanvas() {
 
   return (
     <div style={{ position: "relative" }}>
-      {/* Bubble toggle button */}
-      <button
+      {/* Bubble toggle button (hidden in ?clean=1 sandbox-free mode) */}
+      {!clean && <button
         onClick={() => setShowBubbles(b => !b)}
         style={{
           position: "absolute",
@@ -678,9 +678,9 @@ export function DeskCanvas() {
         }}
       >
         💬 {showBubbles ? "ON" : "OFF"}
-      </button>
+      </button>}
       {/* Calibration toggle button (same as ?cal=1, no URL needed) */}
-      <button
+      {!clean && <button
         onClick={() => { setCalMode(c => !c); setCalClick(null); setDrag(null); }}
         title="Toggle seat calibration overlay"
         style={{
@@ -699,7 +699,7 @@ export function DeskCanvas() {
         }}
       >
         📐 CAL
-      </button>
+      </button>}
 
       <div
         ref={containerRef}

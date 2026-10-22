@@ -30,6 +30,24 @@ function PixelAgentsPage() {
 
   const c = theme.colors;
 
+  // ?clean=1 — office only, no chrome (status bar, log, panels, selectors).
+  // Used for screenshots/shareable wallpapers; also keeps private agent data
+  // out of any capture. Applied after mount to avoid hydration mismatch.
+  const [cleanMode, setCleanMode] = useState(false);
+  useEffect(() => {
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("clean") === "1") {
+      setCleanMode(true);
+    }
+  }, []);
+
+  if (cleanMode) {
+    return (
+      <div style={{ width: "100vw", height: "100vh", overflow: "hidden", background: "#0b0b12" }}>
+        <DeskCanvas clean />
+      </div>
+    );
+  }
+
   return (
     <div style={{
       minHeight: "100vh",
