@@ -138,6 +138,11 @@ function createWindow() {
       if (!mainWindow.isVisible()) mainWindow.show();
     }
   });
+  // The page's own <title> overwrites ours — re-apply so the window always
+  // shows which port the app is serving on.
+  mainWindow.webContents.on("did-finish-load", () => {
+    if (mainWindow) mainWindow.setTitle(`Pixel Office - Agent Visualizer (${PORT})`);
+  });
   // Show loading screen immediately
   mainWindow.loadURL(LOADING_HTML);
 
